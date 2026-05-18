@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+<<<<<<< HEAD
 .env
 .env.*.local
 .env*
@@ -21,6 +22,8 @@ coverage
 .nuxt
 out
 
+=======
+>>>>>>> parent of e5bc8c0 (remove .env)
 
 # Editor directories and files
 .vscode/*
