@@ -385,7 +385,10 @@ function PdfItem({ item }) {
     setLoading(true)
     try {
       const data = await apiFetch(`/api/purchase/stream-url/${item._id}`)
-      const res = await fetch(data.url)
+      const storedToken = localStorage.getItem('student_token')
+      const res = await fetch(data.url, storedToken
+        ? { headers: { Authorization: `Bearer ${storedToken}` } }
+        : undefined)
       if (!res.ok) throw new Error('Unable to open PDF. Please try again.')
       const blob = await res.blob()
       setBlobUrl(URL.createObjectURL(blob))
