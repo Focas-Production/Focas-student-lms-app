@@ -63,13 +63,10 @@ function VideoItem({ item, productId, initialProgress }) {
         cachedRef.current = embedUrl
         setStreamUrl(embedUrl); setOpen(true)
       } else {
-        // Legacy: download blob via proxy
-        const resp = await fetch(url, { headers: { 'ngrok-skip-browser-warning': 'true' } })
-        if (!resp.ok) throw new Error('Unable to load video')
-        const blob = await resp.blob()
-        const blobUrl = URL.createObjectURL(blob)
-        cachedRef.current = blobUrl
-        setStreamUrl(blobUrl); setOpen(true)
+        // Legacy Bunny Storage: use <video src> directly with the pre-signed path URL.
+        // Browser handles range requests natively — video starts immediately, no full download.
+        cachedRef.current = url
+        setStreamUrl(url); setOpen(true)
       }
     } catch (e) {
       setUrlError(e.message || 'Unable to load video. Please try again.')
@@ -388,7 +385,8 @@ function PdfItem({ item }) {
     setLoading(true)
     try {
       const data = await apiFetch(`/api/purchase/stream-url/${item._id}`)
-      const res  = await fetch(data.url, { headers: { 'ngrok-skip-browser-warning': 'true' } })
+      const res = await fetch(data.url)
+      if (!res.ok) throw new Error('Unable to open PDF. Please try again.')
       const blob = await res.blob()
       setBlobUrl(URL.createObjectURL(blob))
       setOpen(true)
