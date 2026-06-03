@@ -15,6 +15,7 @@ export default function LoginPage() {
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState('')
   const [resendTimer, setResendTimer] = useState(0)
+  const [deviceConflict, setDeviceConflict] = useState(null)
   const otpRefs  = useRef([])
   const timerRef = useRef(null)
 
@@ -68,7 +69,61 @@ export default function LoginPage() {
       const res  = await fetch(`${API_BASE}/api/auth/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          ...body,
+          screenResolution: `${window.screen.width}x${window.screen.height}`,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Verification failed')
+
+      if (data.requiresDeviceConfirmation) {
+        setDeviceConflict({
+          oldDevice: data.oldDevice,
+          loginData: { ...body, forceLogin: true }
+        })
+        return
+      }
+
+      if (data.user.isAdmin) {
+        window.location.href = import.meta.env.VITE_ADMIN_APP_URL || 'http://localhost:5174'
+        return
+      }
+
+      login(data.user, data.token)
+      const role = getRole(data.user)
+      navigate(role === 'mentor' ? '/mentor' : '/student', { replace: true })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleLogoutFromOldDevice() {
+    setError('')
+    setLoading(true)
+    try {
+      const logoutBody = tab === 'phone'
+        ? { phoneNumber: identifier.trim() }
+        : { email: identifier.trim() }
+      const logoutRes = await fetch(`${API_BASE}/api/auth/logout-other-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(logoutBody),
+      })
+      if (!logoutRes.ok) throw new Error('Failed to logout from other device')
+
+      const body = deviceConflict.loginData
+      const res = await fetch(`${API_BASE}/api/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...body,
+          screenResolution: `${window.screen.width}x${window.screen.height}`,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Verification failed')
@@ -85,7 +140,16 @@ export default function LoginPage() {
       setError(err.message)
     } finally {
       setLoading(false)
+      setDeviceConflict(null)
     }
+  }
+
+  function handleCancelLogin() {
+    setDeviceConflict(null)
+    setStep('input')
+    setIdentifier('')
+    setOtp(['', '', '', '', '', ''])
+    setError('')
   }
 
   function handleOtpChange(i, v) {
@@ -111,6 +175,51 @@ export default function LoginPage() {
   const masked = tab === 'phone'
     ? identifier.replace(/(\d{2})\d+(\d{2})/, '$1****$2')
     : identifier.replace(/(.{2}).*(@.*)/, '$1****$2')
+
+  if (deviceConflict) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          <div className="bg-white rounded-3xl shadow-xl p-8">
+            <div className="text-center mb-6">
+              <div className="inline-flex items-center justify-center w-14 h-14 bg-red-100 rounded-full mb-4">
+                <svg className="w-7 h-7 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4v2m0 0H8m4 0h4m-12-4c0-1.657.895-3.107 2.23-3.897M12 3c-4.418 0-8 3.582-8 8s3.582 8 8 8 8-3.582 8-8c0-1.194-.263-2.327-.738-3.345" />
+                </svg>
+              </div>
+              <h2 className="text-xl font-semibold text-gray-800 mb-2">Already Logged In</h2>
+              <p className="text-gray-500 text-sm mb-4">You're currently logged in on another device</p>
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-4 mb-6">
+              <div className="text-sm mb-3">
+                <p className="text-gray-600 mb-1">Active device:</p>
+                <p className="font-medium text-gray-900">{deviceConflict.oldDevice.deviceName}</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Last login: {new Date(deviceConflict.oldDevice.lastLoginTime).toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-sm text-gray-600 mb-6">
+              Would you like to log in on this device? You'll be logged out from your previous device.
+            </p>
+
+            <div className="flex gap-3">
+              <button onClick={handleCancelLogin} disabled={loading}
+                className="flex-1 px-4 py-3 border border-gray-200 rounded-xl text-gray-700 font-medium hover:bg-gray-50 disabled:opacity-50">
+                Cancel
+              </button>
+              <button onClick={handleLogoutFromOldDevice} disabled={loading}
+                className="flex-1 px-4 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white font-medium rounded-xl transition-colors flex items-center justify-center gap-2">
+                {loading ? <><Spinner />Logging in...</> : 'Yes, Log Me In'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center p-4">
@@ -177,13 +286,13 @@ export default function LoginPage() {
                 6-digit code sent to <span className="font-medium text-gray-700">{masked}</span>
               </p>
               <form onSubmit={verifyOTP}>
-                <div className="flex gap-2 justify-between mb-2" onPaste={handleOtpPaste}>
+                <div className="flex gap-1.5 sm:gap-2 mb-2" onPaste={handleOtpPaste}>
                   {otp.map((d, i) => (
                     <input key={i} ref={el => otpRefs.current[i] = el}
                       type="text" inputMode="numeric" maxLength={1} value={d}
                       onChange={e => handleOtpChange(i, e.target.value)}
                       onKeyDown={e => handleOtpKeyDown(i, e)}
-                      className={`w-12 h-12 text-center text-xl font-bold border-2 rounded-xl outline-none transition-all ${
+                      className={`flex-1 min-w-0 aspect-square text-center text-lg sm:text-xl font-bold border-2 rounded-xl outline-none transition-all ${
                         d ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 focus:border-indigo-400'
                       }`} />
                   ))}

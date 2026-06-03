@@ -422,43 +422,87 @@ function groupBySubjectFolder(items) {
   }))
 }
 
-function FolderGroup({ folder, items, renderItem }) {
-  const hasFolderName = folder.trim().length > 0
+// Collapsible chapter (folder). Click the header to reveal its files.
+function ChapterGroup({ folder, items, renderItem, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className={hasFolderName ? 'ml-0' : ''}>
-      {hasFolderName && (
-        <div className="flex items-center gap-2 mb-2 px-1">
-          <svg className="w-4 h-4 text-amber-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
-          </svg>
-          <span className="text-xs font-bold text-gray-700">{folder}</span>
-          <span className="text-xs text-gray-400">({items.length})</span>
+    <div className="border border-gray-100 rounded-xl overflow-hidden bg-white">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2.5 px-3.5 py-3 hover:bg-amber-50/60 transition-colors text-left">
+        <svg className="w-4 h-4 text-amber-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+        </svg>
+        <span className="text-sm font-semibold text-gray-700 flex-1 min-w-0 truncate">{folder}</span>
+        <span className="text-xs text-gray-400 flex-shrink-0">{items.length} file{items.length > 1 ? 's' : ''}</span>
+        <svg className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-50 bg-amber-50/30">
+          {items.map(item => renderItem(item))}
         </div>
       )}
-      <div className={`space-y-2 ${hasFolderName ? 'ml-4 border-l-2 border-amber-100 pl-3' : ''}`}>
-        {items.map(item => renderItem(item))}
-      </div>
     </div>
   )
 }
 
-function SubjectSection({ subject, folders, renderItem }) {
+// Collapsible subject. Click to reveal its chapters; loose files (no chapter) show directly.
+function SubjectSection({ subject, folders, renderItem, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen)
+  const totalFiles    = folders.reduce((s, f) => s + f.items.length, 0)
+  const namedChapters = folders.filter(f => f.folder.trim().length > 0)
+  const rootItems     = folders.find(f => !f.folder.trim())?.items || []
+  // If a subject has exactly one chapter and nothing loose, open it automatically.
+  const autoOpenChapter = namedChapters.length === 1 && rootItems.length === 0
+
   return (
-    <div>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-5 h-5 bg-indigo-100 rounded flex items-center justify-center flex-shrink-0">
-          <svg className="w-3 h-3 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+    <div className="border border-gray-200 rounded-2xl overflow-hidden bg-white shadow-sm">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-50 transition-colors text-left">
+        <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
+          <svg className="w-4 h-4 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
             <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
           </svg>
         </div>
-        <h2 className="text-sm font-bold text-gray-800">{subject}</h2>
-        <span className="text-xs text-gray-400">({folders.reduce((s, f) => s + f.items.length, 0)})</span>
-      </div>
-      <div className="space-y-4">
-        {folders.map(({ folder, items }) => (
-          <FolderGroup key={folder || '__root__'} folder={folder} items={items} renderItem={renderItem} />
-        ))}
-      </div>
+        <div className="flex-1 min-w-0">
+          <h2 className="text-sm font-bold text-gray-800 truncate">{subject}</h2>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {namedChapters.length > 0 && `${namedChapters.length} chapter${namedChapters.length > 1 ? 's' : ''} · `}
+            {totalFiles} file{totalFiles > 1 ? 's' : ''}
+          </p>
+        </div>
+        <svg className={`w-5 h-5 text-gray-400 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-100 bg-gray-50/50">
+          {rootItems.length > 0 && (
+            <div className="space-y-2">{rootItems.map(item => renderItem(item))}</div>
+          )}
+          {namedChapters.map(({ folder, items }) => (
+            <ChapterGroup key={folder} folder={folder} items={items}
+              renderItem={renderItem} defaultOpen={autoOpenChapter} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Groups items by subject → chapter and renders collapsible sections.
+// Everything starts collapsed — subjects and chapters open only when clicked.
+function ContentGroups({ items, renderItem }) {
+  const groups = groupBySubjectFolder(items)
+  return (
+    <div className="space-y-3">
+      {groups.map(({ subject, folders }) => (
+        <SubjectSection key={subject} subject={subject} folders={folders}
+          renderItem={renderItem} />
+      ))}
     </div>
   )
 }
@@ -469,19 +513,28 @@ export default function CourseContentPage() {
   const navigate       = useNavigate()
   const courseInfo     = location.state?.item || null
 
-  const [content,    setContent]    = useState([])
-  const [progress,   setProgress]   = useState({})
-  const [loading,    setLoading]    = useState(true)
-  const [loadError,  setLoadError]  = useState('')
-  const [activeTab,  setActiveTab]  = useState('lecture')
-  const [activeTSType, setActiveTSType] = useState('chapter_wise')
+  const [content,       setContent]       = useState([])
+  const [progress,      setProgress]      = useState({})
+  const [loading,       setLoading]       = useState(true)
+  const [loadError,     setLoadError]     = useState('')
+  const [activeTab,     setActiveTab]     = useState('lecture')
+  const [activeTSType,  setActiveTSType]  = useState('chapter_wise')
+  const [accessStatus,  setAccessStatus]  = useState({ loading: true, hasAccess: false })
 
   useEffect(() => {
+    setLoading(true)
+    setAccessStatus({ loading: true, hasAccess: false })
     Promise.all([
+      apiFetch(`/api/purchase/check-access/${productId}`),
       apiFetch(`/api/purchase/content?productId=${productId}`),
       apiFetch(`/api/purchase/progress?productId=${productId}`),
     ])
-      .then(([contentData, progressData]) => {
+      .then(([accessData, contentData, progressData]) => {
+        setAccessStatus(accessData)
+        if (!accessData.hasAccess) {
+          setLoadError(`Your access to this product has expired on ${new Date(accessData.expiresAt).toLocaleDateString()}. Please contact support to renew your access.`)
+          return
+        }
         setContent(contentData.content || [])
         setProgress(progressData.progress || {})
       })
@@ -577,6 +630,36 @@ export default function CourseContentPage() {
           </div>
         )}
 
+        {/* Access validity info */}
+        {!loading && !loadError && accessStatus.hasAccess && accessStatus.daysRemaining !== null && (
+          <div className={`mb-4 p-3 rounded-lg flex items-start gap-3 ${
+            accessStatus.daysRemaining > 30
+              ? 'bg-blue-50 border border-blue-200'
+              : 'bg-amber-50 border border-amber-200'
+          }`}>
+            <svg className={`w-5 h-5 flex-shrink-0 mt-0.5 ${
+              accessStatus.daysRemaining > 30 ? 'text-blue-600' : 'text-amber-600'
+            }`} fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 5v8a2 2 0 01-2 2h-5l-5 4v-4H4a2 2 0 01-2-2V5a2 2 0 012-2h12a2 2 0 012 2zm-11-1a1 1 0 11-2 0 1 1 0 012 0zm3 1a1 1 0 100-2 1 1 0 000 2zm3-1a1 1 0 11-2 0 1 1 0 012 0z" clipRule="evenodd" />
+            </svg>
+            <div className="flex-1 text-sm">
+              <p className={`font-medium ${
+                accessStatus.daysRemaining > 30 ? 'text-blue-900' : 'text-amber-900'
+              }`}>
+                {accessStatus.daysRemaining > 30
+                  ? `Access valid for ${accessStatus.daysRemaining} more days`
+                  : `⚠️ Access expires in ${accessStatus.daysRemaining} days`
+                }
+              </p>
+              <p className={`text-xs mt-0.5 ${
+                accessStatus.daysRemaining > 30 ? 'text-blue-700' : 'text-amber-700'
+              }`}>
+                Expires on {new Date(accessStatus.expiresAt).toLocaleDateString()}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Loading skeleton */}
         {loading && (
           <div className="space-y-3">
@@ -620,37 +703,25 @@ export default function CourseContentPage() {
 
         {/* ── LECTURES ── */}
         {!loading && !loadError && activeTab === 'lecture' && lectures.length > 0 && (
-          <div className="space-y-6">
-            {groupBySubjectFolder(lectures).map(({ subject, folders }) => (
-              <SubjectSection
-                key={subject}
-                subject={subject}
-                folders={folders}
-                renderItem={item =>
-                  item.type === 'video'
-                    ? <VideoItem key={item._id} item={item} productId={productId} initialProgress={progress[item._id]} />
-                    : <PdfItem key={item._id} item={item} />
-                }
-              />
-            ))}
-          </div>
+          <ContentGroups
+            items={lectures}
+            renderItem={item =>
+              item.type === 'video'
+                ? <VideoItem key={item._id} item={item} productId={productId} initialProgress={progress[item._id]} />
+                : <PdfItem key={item._id} item={item} />
+            }
+          />
         )}
 
         {/* ── QUESTION BANK ── */}
         {!loading && !loadError && activeTab === 'question_bank' && questionBank.length > 0 && (
-          <div className="space-y-6">
-            {groupBySubjectFolder(questionBank).map(({ subject, folders }) => (
-              <SubjectSection
-                key={subject}
-                subject={subject}
-                folders={folders}
-                renderItem={item => (
-                  <PdfItem key={item._id} item={item}
-                    badge={{ label: 'Q. Bank', color: 'text-amber-700 bg-amber-50 group-hover:bg-amber-100' }} />
-                )}
-              />
-            ))}
-          </div>
+          <ContentGroups
+            items={questionBank}
+            renderItem={item => (
+              <PdfItem key={item._id} item={item}
+                badge={{ label: 'Q. Bank', color: 'text-amber-700 bg-amber-50 group-hover:bg-amber-100' }} />
+            )}
+          />
         )}
 
         {/* ── TEST SERIES ── */}
@@ -670,16 +741,10 @@ export default function CourseContentPage() {
               </div>
             )}
 
-            <div className="space-y-6">
-              {groupBySubjectFolder(tsTypesAvailable.length > 1 ? tsFiltered : testSeries).map(({ subject, folders }) => (
-                <SubjectSection
-                  key={subject}
-                  subject={subject}
-                  folders={folders}
-                  renderItem={item => <TestSeriesItem key={item._id} item={item} />}
-                />
-              ))}
-            </div>
+            <ContentGroups
+              items={tsTypesAvailable.length > 1 ? tsFiltered : testSeries}
+              renderItem={item => <TestSeriesItem key={item._id} item={item} />}
+            />
           </div>
         )}
       </div>

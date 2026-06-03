@@ -14,7 +14,17 @@ export async function apiFetch(path, options = {}) {
     headers: { ...authHeaders(), ...extraHeaders },
     ...restOptions,
   })
-  const data = await res.json()
-  if (!res.ok) throw new Error(data.error || 'Request failed')
+  // Parse defensively — a non-JSON error page (proxy 502/504, empty body) must not
+  // mask the real HTTP status with an "Unexpected token" parse error.
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    // Device logout: specific error message and 401 status
+    if (res.status === 401 && data.error === 'You have been logged out - login from another device') {
+      localStorage.removeItem('student_token')
+      localStorage.removeItem('student_user')
+      window.dispatchEvent(new CustomEvent('device-logout'))
+    }
+    throw new Error(data.error || `Request failed (${res.status})`)
+  }
   return data
 }

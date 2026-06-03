@@ -3,7 +3,9 @@ import { apiFetch } from '../api'
 
 function isTokenExpired(token) {
   try {
-    const payload = JSON.parse(atob(token.split('.')[1]))
+    // JWT segments are base64url — convert to standard base64 before decoding
+    const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
+    const payload = JSON.parse(atob(b64))
     return payload.exp * 1000 < Date.now()
   } catch {
     return true
@@ -52,7 +54,13 @@ export function AuthProvider({ children }) {
         const updated = { ...fresh, id: fresh.id || parsed.id }
         persist(updated)
       })
-      .catch(() => clear())
+      .catch(err => {
+        // Only clear if it's a device logout error, not network errors
+        if (err.message === 'You have been logged out - login from another device') {
+          clear()
+        }
+        // For other errors (network, server), keep the user logged in and retry later
+      })
       .finally(() => setLoading(false))
   }, [])
 
