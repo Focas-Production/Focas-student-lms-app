@@ -14,6 +14,7 @@ function isTokenExpired(token) {
 
 export function getRole(user) {
   if (!user) return null
+  if (user.isMentor) return 'mentor'
   const features = [
     ...(user.access?.website?.features || []),
     ...(user.access?.shopify?.features  || []),

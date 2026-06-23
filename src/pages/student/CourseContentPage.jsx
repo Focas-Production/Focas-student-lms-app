@@ -440,12 +440,32 @@ function ChapterGroup({ folder, items, renderItem, defaultOpen = false }) {
         </svg>
       </button>
       {open && (
-        <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-50 bg-amber-50/30">
-          {items.map(item => renderItem(item))}
+        <div className="px-3 pb-3 pt-1 space-y-3 border-t border-gray-50 bg-amber-50/30">
+          {groupByUnit(items).map(({ unit, items: unitItems }) => (
+            <div key={unit || '__none__'} className="space-y-2">
+              {unit && (
+                <p className="text-[11px] font-semibold text-indigo-600 uppercase tracking-wide pt-1 pl-0.5">{unit}</p>
+              )}
+              {unitItems.map(item => renderItem(item))}
+            </div>
+          ))}
         </div>
       )}
     </div>
   )
+}
+
+// Group a chapter's items by unit, preserving order; units with no name sort last.
+function groupByUnit(items) {
+  const map = new Map()
+  for (const item of items) {
+    const u = item.unit?.trim() || ''
+    if (!map.has(u)) map.set(u, [])
+    map.get(u).push(item)
+  }
+  return [...map.entries()]
+    .sort((a, b) => (a[0] ? 0 : 1) - (b[0] ? 0 : 1))   // named units first, unnamed last
+    .map(([unit, items]) => ({ unit, items }))
 }
 
 // Collapsible subject. Click to reveal its chapters; loose files (no chapter) show directly.

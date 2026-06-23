@@ -11,10 +11,12 @@ import MyCoursesPage from '../pages/student/MyCoursesPage'
 import CourseContentPage from '../pages/student/CourseContentPage'
 import ExplorePage from '../pages/student/ExplorePage'
 import ProfilePage from '../pages/student/ProfilePage'
+import TestSeriesPage from '../pages/student/TestSeriesPage'
 
 import MentorDashboard from '../pages/mentor/MentorDashboard'
 import MyStudentsPage from '../pages/mentor/MyStudentsPage'
 import MentorProfilePage from '../pages/mentor/MentorProfilePage'
+import MentorTestSeriesPage from '../pages/mentor/MentorTestSeriesPage'
 
 function RootRedirect() {
   const { user, role, loading } = useAuth()
@@ -37,6 +39,7 @@ export default function AppRouter() {
         <Route index          element={<StudentHome />} />
         <Route path="courses"            element={<MyCoursesPage />} />
         <Route path="courses/:productId" element={<CourseContentPage />} />
+        <Route path="test-series" element={<TestSeriesPage />} />
         <Route path="explore" element={<ExplorePage />} />
         <Route path="profile" element={<ProfilePage />} />
       </Route>
@@ -46,6 +49,7 @@ export default function AppRouter() {
         <ProtectedRoute requiredRole="mentor"><MentorLayout /></ProtectedRoute>
       }>
         <Route index           element={<MentorDashboard />} />
+        <Route path="test-series" element={<MentorTestSeriesPage />} />
         <Route path="students" element={<MyStudentsPage />} />
         <Route path="profile"  element={<MentorProfilePage />} />
       </Route>
