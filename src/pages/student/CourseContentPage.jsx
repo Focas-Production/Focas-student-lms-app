@@ -148,15 +148,15 @@ function VideoItem({ item, productId, initialProgress }) {
           }
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-gray-900 truncate">{item.title}</p>
+          <p className="text-sm font-semibold text-gray-900 break-words leading-snug">{item.title}</p>
           <div className="flex items-center gap-2 mt-0.5">
-            {item.description && <p className="text-xs text-gray-400 truncate flex-1 min-w-0">{item.description}</p>}
+            {item.description && <p className="text-xs text-gray-400 break-words flex-1 min-w-0">{item.description}</p>}
             {resumeLabel && !open && !loadingUrl && <span className="text-xs text-indigo-500 font-semibold flex-shrink-0">▶ {resumeLabel}</span>}
             {watchedMin && !resumeLabel && !loadingUrl && <span className="text-xs text-green-500 font-medium flex-shrink-0">✓ {watchedMin}m</span>}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {item.size > 0 && <span className="text-xs text-gray-400">{fmtSize(item.size)}</span>}
+          {item.size > 0 && <span className="hidden sm:inline text-xs text-gray-400 whitespace-nowrap">{fmtSize(item.size)}</span>}
           <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Video</span>
           <svg className={`w-4 h-4 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -335,11 +335,11 @@ function PdfItem({ item, badge }) {
           }
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-gray-900 truncate">{item.title}</p>
-          {item.description && <p className="text-xs text-gray-400 truncate">{item.description}</p>}
+          <p className="text-sm font-semibold text-gray-900 break-words leading-snug">{item.title}</p>
+          {item.description && <p className="text-xs text-gray-400 break-words">{item.description}</p>}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {item.size > 0 && <span className="text-xs text-gray-400">{fmtSize(item.size)}</span>}
+          {item.size > 0 && <span className="hidden sm:inline text-xs text-gray-400 whitespace-nowrap">{fmtSize(item.size)}</span>}
           <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${badge?.color || 'text-red-600 bg-red-50 group-hover:bg-red-100'}`}>
             {badge?.label || 'PDF'}
           </span>
@@ -432,23 +432,48 @@ function ChapterGroup({ folder, items, renderItem, defaultOpen = false }) {
         <svg className="w-4 h-4 text-amber-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
           <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
         </svg>
-        <span className="text-sm font-semibold text-gray-700 flex-1 min-w-0 truncate">{folder}</span>
-        <span className="text-xs text-gray-400 flex-shrink-0">{items.length} file{items.length > 1 ? 's' : ''}</span>
+        <span className="text-sm font-semibold text-gray-700 flex-1 min-w-0 break-words leading-snug">{folder}</span>
+        <span className="text-xs text-gray-400 flex-shrink-0 whitespace-nowrap">{items.length} file{items.length > 1 ? 's' : ''}</span>
         <svg className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
           fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
       {open && (
-        <div className="px-3 pb-3 pt-1 space-y-3 border-t border-gray-50 bg-amber-50/30">
+        <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-50 bg-amber-50/30">
           {groupByUnit(items).map(({ unit, items: unitItems }) => (
-            <div key={unit || '__none__'} className="space-y-2">
-              {unit && (
-                <p className="text-[11px] font-semibold text-indigo-600 uppercase tracking-wide pt-1 pl-0.5">{unit}</p>
-              )}
-              {unitItems.map(item => renderItem(item))}
-            </div>
+            <UnitGroup key={unit || '__none__'} unit={unit} items={unitItems} renderItem={renderItem} />
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Collapsible unit / part inside a chapter. Click to reveal its files.
+// Files without a unit name render directly (no header, no extra nesting).
+function UnitGroup({ unit, items, renderItem }) {
+  const [open, setOpen] = useState(false)
+  if (!unit) {
+    return <div className="space-y-2">{items.map(item => renderItem(item))}</div>
+  }
+  return (
+    <div className="border border-indigo-100 rounded-lg overflow-hidden bg-white">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-indigo-50/60 transition-colors text-left">
+        <svg className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM2 11a2 2 0 012-2h12a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4z" />
+        </svg>
+        <span className="text-[11px] font-semibold text-indigo-700 uppercase tracking-wide flex-1 min-w-0 break-words leading-snug">{unit}</span>
+        <span className="text-[11px] text-gray-400 flex-shrink-0 whitespace-nowrap">{items.length} file{items.length > 1 ? 's' : ''}</span>
+        <svg className={`w-3.5 h-3.5 text-gray-400 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="px-2.5 pb-2.5 pt-1 space-y-2 border-t border-indigo-50 bg-indigo-50/20">
+          {items.map(item => renderItem(item))}
         </div>
       )}
     </div>
@@ -487,7 +512,7 @@ function SubjectSection({ subject, folders, renderItem, defaultOpen = false }) {
           </svg>
         </div>
         <div className="flex-1 min-w-0">
-          <h2 className="text-sm font-bold text-gray-800 truncate">{subject}</h2>
+          <h2 className="text-sm font-bold text-gray-800 break-words leading-snug">{subject}</h2>
           <p className="text-xs text-gray-400 mt-0.5">
             {namedChapters.length > 0 && `${namedChapters.length} chapter${namedChapters.length > 1 ? 's' : ''} · `}
             {totalFiles} file{totalFiles > 1 ? 's' : ''}
