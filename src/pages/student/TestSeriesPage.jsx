@@ -11,6 +11,16 @@ const ATTEMPT_KEY = 'active_test_attempt'
 
 const uniq = (arr) => [...new Set(arr.filter(Boolean))]
 
+// Make a mentor-entered link absolute so target="_blank" doesn't resolve it
+// relative to the app. Returns '' for values that aren't a plausible URL.
+function normalizeUrl(raw) {
+  const u = (raw || '').trim()
+  if (!u) return ''
+  if (/^https?:\/\//i.test(u)) return u
+  if (!u.includes('.')) return ''
+  return `https://${u}`
+}
+
 // PUT a file straight to its presigned R2 URL — bytes never touch our server.
 async function putToR2(uploadUrl, file) {
   const res = await fetch(uploadUrl, {
@@ -272,7 +282,7 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
             <li>Total marks: <strong>{attempt.totalMarks}</strong></li>
             <li>The timer starts as soon as you press <strong>I Agree</strong>.</li>
             <li>Write your answers on paper. The <strong>upload option unlocks only after the timer ends</strong>.</li>
-            <li>You may upload multiple files (photo, PDF, Excel — any format).</li>
+            <li>You may upload only one file (photo, PDF, Excel — any format).</li>
           </ul>
         </div>
         <div className="flex gap-2">
@@ -521,10 +531,10 @@ function ResultModal({ sub, onClose }) {
               <p className="text-sm text-gray-700 bg-gray-50 rounded-lg px-3 py-2 whitespace-pre-wrap">{sub.mentorNotes}</p>
             </div>
           )}
-          {sub.reviewVideoUrl && (
+          {normalizeUrl(sub.reviewVideoUrl) && (
             <div>
               <p className="text-xs font-semibold text-gray-500 mb-1.5">Mentor review video</p>
-              <a href={sub.reviewVideoUrl} target="_blank" rel="noreferrer"
+              <a href={normalizeUrl(sub.reviewVideoUrl)} target="_blank" rel="noreferrer"
                 className="w-full inline-flex items-center justify-center gap-2 text-sm font-semibold bg-rose-50 text-rose-700 rounded-lg px-3 py-2.5 hover:bg-rose-100">
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/></svg>
                 Watch Review Video ↗
