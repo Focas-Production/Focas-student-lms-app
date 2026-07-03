@@ -46,6 +46,8 @@ export default function TestSeriesPage() {
   const [catalog, setCatalog] = useState([])
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
+  const [starting, setStarting] = useState(false)   // verifying attempts on "Start Test"
+  const [startError, setStartError] = useState('')  // shown immediately if no attempts left
 
   // cascade selections
   const [type, setType] = useState('')
@@ -62,12 +64,20 @@ export default function TestSeriesPage() {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 4000) }
 
-  useEffect(() => {
-    apiFetch('/api/test-series/catalog')
-      .then(d => setCatalog(d.catalog || []))
-      .catch(() => setCatalog([]))
-      .finally(() => setLoading(false))
+  // Fetch the catalog (also refreshes per-paper attempt counts). Returns the fresh list.
+  const loadCatalog = useCallback(async () => {
+    try {
+      const d = await apiFetch('/api/test-series/catalog')
+      const list = d.catalog || []
+      setCatalog(list)
+      return list
+    } catch {
+      setCatalog([])
+      return []
+    }
   }, [])
+
+  useEffect(() => { loadCatalog().finally(() => setLoading(false)) }, [loadCatalog])
 
   // ── cascade option lists ──
   const types    = useMemo(() => uniq(catalog.map(c => c.testSeriesType)), [catalog])
@@ -78,18 +88,37 @@ export default function TestSeriesPage() {
   const files    = useMemo(() => catalog.filter(c => c.testSeriesType === type && c.level === level && c.subject === subject && c.chapter === chapter && (c.unit || '') === unit), [catalog, type, level, subject, chapter, unit])
   const selectedFile = useMemo(() => files.find(f => f.contentId === fileId) || null, [files, fileId])
 
-  // reset descendants when an ancestor changes
-  const onType    = v => { setType(v); setLevel(''); setSubject(''); setChapter(''); setUnit(''); setFileId('') }
-  const onLevel   = v => { setLevel(v); setSubject(''); setChapter(''); setUnit(''); setFileId('') }
-  const onSubject = v => { setSubject(v); setChapter(''); setUnit(''); setFileId('') }
-  const onChapter = v => { setChapter(v); setUnit(''); setFileId('') }
-  const onUnit    = v => { setUnit(v); setFileId('') }
+  // reset descendants when an ancestor changes (also clear any stale start error)
+  const onType    = v => { setStartError(''); setType(v); setLevel(''); setSubject(''); setChapter(''); setUnit(''); setFileId('') }
+  const onLevel   = v => { setStartError(''); setLevel(v); setSubject(''); setChapter(''); setUnit(''); setFileId('') }
+  const onSubject = v => { setStartError(''); setSubject(v); setChapter(''); setUnit(''); setFileId('') }
+  const onChapter = v => { setStartError(''); setChapter(v); setUnit(''); setFileId('') }
+  const onUnit    = v => { setStartError(''); setUnit(v); setFileId('') }
+  const onFile    = v => { setStartError(''); setFileId(v) }
 
-  const beginAttempt = (file) => {
+  const attemptsLeftOf = (f) =>
+    f ? (f.attemptsLeft ?? Math.max(0, (f.attemptLimit ?? 1) - (f.attemptsUsed ?? 0))) : 0
+
+  const beginAttempt = async (file) => {
+    if (!file || starting) return
+    setStarting(true); setStartError('')
+    // Re-check against the server so a stale count can't push the student into a
+    // timed test they can't submit. Show the error up-front — no need to wait.
+    const fresh = await loadCatalog()
+    setStarting(false)
+    const current = fresh.find(f => f.contentId === file.contentId)
+    if (!current) { setStartError('This test is no longer available.'); return }
+    if (attemptsLeftOf(current) <= 0) {
+      const lim = current.attemptLimit ?? 1
+      setStartError(lim === 1
+        ? 'You have already submitted this test. Only one attempt is allowed.'
+        : `You have reached the maximum of ${lim} attempts allowed for this test.`)
+      return
+    }
     const a = {
-      contentId: file.contentId, fileName: file.fileName, level: file.level,
-      subject: file.subject, chapter: file.chapter, unit: file.unit || '', durationMin: file.testDuration,
-      totalMarks: file.totalMarks, startedAt: new Date().toISOString(),
+      contentId: current.contentId, fileName: current.fileName, level: current.level,
+      subject: current.subject, chapter: current.chapter, unit: current.unit || '', durationMin: current.testDuration,
+      totalMarks: current.totalMarks, startedAt: new Date().toISOString(),
     }
     localStorage.setItem(ATTEMPT_KEY, JSON.stringify(a))
     setAttempt(a)
@@ -99,7 +128,8 @@ export default function TestSeriesPage() {
 
   const onSubmitted = () => {
     clearAttempt()
-    setType(''); setLevel(''); setSubject(''); setChapter(''); setUnit(''); setFileId('')
+    setType(''); setLevel(''); setSubject(''); setChapter(''); setUnit(''); setFileId(''); setStartError('')
+    loadCatalog()   // refresh attempt counts so the picker reflects the new usage
     showToast('✅ Answer sheet submitted! Your mentor will evaluate it soon.')
     setTab('submissions')
   }
@@ -136,8 +166,8 @@ export default function TestSeriesPage() {
                 loading={loading} catalog={catalog}
                 types={types} levels={levels} subjects={subjects} chapters={chapters} units={units} files={files}
                 type={type} level={level} subject={subject} chapter={chapter} unit={unit} fileId={fileId}
-                onType={onType} onLevel={onLevel} onSubject={onSubject} onChapter={onChapter} onUnit={onUnit} setFileId={setFileId}
-                selectedFile={selectedFile} onStart={beginAttempt}
+                onType={onType} onLevel={onLevel} onSubject={onSubject} onChapter={onChapter} onUnit={onUnit} setFileId={onFile}
+                selectedFile={selectedFile} onStart={beginAttempt} starting={starting} startError={startError}
               />}
         </div>
       )}
@@ -165,7 +195,7 @@ function Dropdown({ label, value, onChange, options, render, disabled, placehold
 }
 
 function CascadePicker({ loading, catalog, types, levels, subjects, chapters, units, files,
-  type, level, subject, chapter, unit, fileId, onType, onLevel, onSubject, onChapter, onUnit, setFileId, selectedFile, onStart }) {
+  type, level, subject, chapter, unit, fileId, onType, onLevel, onSubject, onChapter, onUnit, setFileId, selectedFile, onStart, starting, startError }) {
 
   if (loading) return <div className="bg-white rounded-2xl p-8 text-center text-gray-400 text-sm">Loading test series…</div>
   if (!catalog.length) return (
@@ -198,20 +228,35 @@ function CascadePicker({ loading, catalog, types, levels, subjects, chapters, un
         render={f => ({ val: f.contentId, lab: f.fileName })}
         disabled={!chapter || (units.filter(Boolean).length > 0 && !unit)} placeholder="Select test paper…" />
 
-      {selectedFile && (
-        <div className="flex items-center gap-4 bg-indigo-50 rounded-xl px-4 py-3 text-sm">
-          <div className="flex-1">
-            <p className="font-semibold text-indigo-900">{selectedFile.fileName}</p>
-            <p className="text-indigo-600 text-xs mt-0.5">
-              Duration {selectedFile.testDuration} min · {selectedFile.totalMarks} marks
-            </p>
+      {selectedFile && (() => {
+        const attemptsLeft = selectedFile.attemptsLeft ?? Math.max(0, (selectedFile.attemptLimit ?? 1) - (selectedFile.attemptsUsed ?? 0))
+        const exhausted = attemptsLeft <= 0
+        return (
+          <div className={`flex items-center gap-4 rounded-xl px-4 py-3 text-sm ${exhausted ? 'bg-red-50' : 'bg-indigo-50'}`}>
+            <div className="flex-1">
+              <p className={`font-semibold ${exhausted ? 'text-red-900' : 'text-indigo-900'}`}>{selectedFile.fileName}</p>
+              <p className={`text-xs mt-0.5 ${exhausted ? 'text-red-600' : 'text-indigo-600'}`}>
+                Duration {selectedFile.testDuration} min · {selectedFile.totalMarks} marks
+              </p>
+              <p className={`text-xs mt-1 font-medium ${exhausted ? 'text-red-700' : 'text-indigo-700'}`}>
+                {exhausted
+                  ? ((selectedFile.attemptLimit ?? 1) === 1 ? 'Already submitted — no attempts left' : 'No attempts left for this test')
+                  : `${attemptsLeft} of ${selectedFile.attemptLimit ?? 1} attempt${(selectedFile.attemptLimit ?? 1) !== 1 ? 's' : ''} remaining`}
+              </p>
+            </div>
           </div>
+        )
+      })()}
+
+      {startError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700 font-medium">
+          {startError}
         </div>
       )}
 
-      <button disabled={!selectedFile} onClick={() => onStart(selectedFile)}
+      <button disabled={!selectedFile || starting || (selectedFile.attemptsLeft ?? 1) <= 0} onClick={() => onStart(selectedFile)}
         className="w-full py-3 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 transition-colors disabled:bg-gray-200 disabled:text-gray-400">
-        Start Test
+        {starting ? 'Checking…' : 'Start Test'}
       </button>
     </div>
   )
