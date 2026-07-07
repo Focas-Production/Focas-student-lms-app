@@ -33,7 +33,7 @@ function PdfPage({ pdf, pageNum, containerWidth }) {
 
 // Full-screen, view-only PDF viewer. Blocks right-click, copy and Ctrl+P/S/C so
 // the document can be read but not easily saved or printed.
-export default function PdfViewer({ blobUrl, title, onClose }) {
+export default function PdfViewer({ blobUrl, title, onClose, badge }) {
   const [pdfDoc,   setPdfDoc]   = useState(null)
   const [numPages, setNumPages] = useState(0)
   const [width,    setWidth]    = useState(600)
@@ -84,6 +84,7 @@ export default function PdfViewer({ blobUrl, title, onClose }) {
           <span className="text-white text-sm font-medium truncate max-w-[220px]">{title}</span>
           {numPages > 0 && <span className="text-gray-400 text-xs ml-1">{numPages} pages</span>}
         </div>
+        {badge}
         <button onClick={onClose}
           className="w-8 h-8 rounded-full bg-gray-700 hover:bg-gray-600 flex items-center justify-center text-white transition-colors flex-shrink-0">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

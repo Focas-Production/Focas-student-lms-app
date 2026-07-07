@@ -270,11 +270,36 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
   const [files, setFiles] = useState([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [paper, setPaper] = useState(null)        // { blobUrl } for the question-paper viewer
+  const [paperLoading, setPaperLoading] = useState(false)
+  const [paperError, setPaperError] = useState('')
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
   }, [])
+
+  // Revoke the question-paper blob when the attempt view unmounts.
+  useEffect(() => () => { if (paper?.blobUrl) URL.revokeObjectURL(paper.blobUrl) }, [paper])
+
+  // Fetch the question paper (view-only PDF) so the student can read it while writing.
+  const viewPaper = useCallback(async () => {
+    if (paperLoading) return
+    setPaperLoading(true); setPaperError('')
+    try {
+      const { url } = await apiFetch(`/api/test-series/question-paper/${attempt.contentId}`)
+      const token = localStorage.getItem('student_token')
+      const res = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
+      if (!res.ok) throw new Error('Unable to open the question paper. Please try again.')
+      setPaper({ blobUrl: URL.createObjectURL(await res.blob()) })
+    } catch (e) {
+      setPaperError(e.message || 'Question paper not available')
+    } finally {
+      setPaperLoading(false)
+    }
+  }, [attempt.contentId, paperLoading])
+
+  const closePaper = () => setPaper(p => { if (p?.blobUrl) URL.revokeObjectURL(p.blobUrl); return null })
 
   const remainingMs = Math.max(0, endTs - now)
   const timeUp = remainingMs <= 0
@@ -326,7 +351,8 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
             <li>Duration: <strong>{attempt.durationMin} minutes</strong></li>
             <li>Total marks: <strong>{attempt.totalMarks}</strong></li>
             <li>The timer starts as soon as you press <strong>I Agree</strong>.</li>
-            <li>Write your answers on paper. The <strong>upload option unlocks only after the timer ends</strong>.</li>
+            <li>The <strong>question paper opens on screen</strong> as soon as the timer starts — read it there and write your answers on paper.</li>
+            <li>The <strong>upload option unlocks only after the timer ends</strong>.</li>
             <li>You may upload only one file (photo, PDF, Excel — any format).</li>
           </ul>
         </div>
@@ -334,7 +360,7 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
           <button onClick={onCancel} className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-600 font-semibold text-sm hover:bg-gray-50">
             Cancel
           </button>
-          <button onClick={() => setAgreed(true)} className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700">
+          <button onClick={() => { setAgreed(true); viewPaper() }} className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700">
             I Agree — Start Timer
           </button>
         </div>
@@ -353,6 +379,15 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
         <p className="text-xs text-gray-400 mt-2">
           {timeUp ? 'You can now upload your answer sheet.' : 'Upload unlocks when the timer reaches 00:00.'}
         </p>
+
+        <button onClick={viewPaper} disabled={paperLoading}
+          className="mt-4 inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-50 text-indigo-700 font-semibold text-sm hover:bg-indigo-100 disabled:opacity-50">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.247m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.247" />
+          </svg>
+          {paperLoading ? 'Opening…' : 'View Question Paper'}
+        </button>
+        {paperError && <p className="text-xs text-red-500 mt-2">{paperError}</p>}
       </div>
 
       <fieldset disabled={!timeUp} className={timeUp ? '' : 'opacity-50 pointer-events-none'}>
@@ -383,6 +418,15 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
           {busy ? 'Uploading…' : 'Submit Answer Sheet'}
         </button>
       </div>
+
+      {paper && (
+        <PdfViewer blobUrl={paper.blobUrl} title={`${attempt.fileName} — Question Paper`} onClose={closePaper}
+          badge={
+            <span className={`font-mono text-sm font-bold px-2.5 py-1 rounded-lg ${timeUp ? 'bg-emerald-500/20 text-emerald-300' : 'bg-indigo-500/20 text-indigo-200'}`}>
+              {timeUp ? 'Time up!' : `${mm}:${ss}`}
+            </span>
+          } />
+      )}
     </div>
   )
 }
