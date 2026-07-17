@@ -12,6 +12,7 @@ import CourseContentPage from '../pages/student/CourseContentPage'
 import ExplorePage from '../pages/student/ExplorePage'
 import ProfilePage from '../pages/student/ProfilePage'
 import TestSeriesPage from '../pages/student/TestSeriesPage'
+import AiPracticePage from '../pages/student/AiPracticePage'
 
 import MentorDashboard from '../pages/mentor/MentorDashboard'
 import MyStudentsPage from '../pages/mentor/MyStudentsPage'
@@ -40,6 +41,7 @@ export default function AppRouter() {
         <Route path="courses"            element={<MyCoursesPage />} />
         <Route path="courses/:productId" element={<CourseContentPage />} />
         <Route path="test-series" element={<TestSeriesPage />} />
+        <Route path="ai-practice" element={<AiPracticePage />} />
         <Route path="explore" element={<ExplorePage />} />
         <Route path="profile" element={<ProfilePage />} />
       </Route>
