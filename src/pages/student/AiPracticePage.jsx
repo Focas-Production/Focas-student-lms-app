@@ -5,6 +5,21 @@ import MarkdownBlock from '../../components/MarkdownBlock'
 // Student: browse the published question bank and generate a similar practice
 // question on demand. Monthly usage is capped by the student's Lite/Pro tier.
 
+// Questions often carry a markdown table (balance sheets etc.). The full/expanded view
+// renders it properly; the collapsed one-line preview shouldn't dump "| --- | --- |" at
+// the reader. Drop the separator rows, unwrap the remaining cells to plain prose, and
+// collapse whitespace so the snippet reads as a sentence.
+function previewText(md = '') {
+  return md
+    .split('\n')
+    .filter((line) => !/^\s*\|?\s*:?-{2,}.*\|/.test(line))   // separator row on its own line
+    .map((line) => line.replace(/\|/g, ' ').trim())          // table pipes → spaces
+    .join(' ')
+    .replace(/(^|\s)-{2,}(?=\s|$)/g, ' ')                    // inline "--- ---" leftovers
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 const TYPE_STYLE = {
   Numerical: 'bg-indigo-50 text-indigo-700',
   Theory:    'bg-sky-50 text-sky-700',
@@ -19,7 +34,7 @@ const DIFF_STYLE = {
 
 export default function AiPracticePage() {
   const [quota, setQuota]     = useState(null)
-  const [filters, setFilters] = useState({ subjects: [], chapters: [], levels: [] })
+  const [filters, setFilters] = useState({ subjects: [], chapters: [], chaptersBySubject: {}, levels: [] })
   const [subject, setSubject] = useState('')
   const [chapter, setChapter] = useState('')
   const [rows, setRows]       = useState(null)
@@ -48,6 +63,12 @@ export default function AiPracticePage() {
 
   const onSubject = (v) => { setSubject(v); setChapter(''); setPage(1) }
   const onChapter = (v) => { setChapter(v); setPage(1) }
+
+  // Chapters shown in the dropdown: scoped to the selected subject; when no
+  // subject is picked, fall back to every chapter across all subjects.
+  const chapterOptions = subject
+    ? (filters.chaptersBySubject?.[subject] || [])
+    : filters.chapters
 
   const noAccess = quota && !quota.hasAccess
   const pct = quota?.limit ? Math.min(100, Math.round((quota.used / quota.limit) * 100)) : 0
@@ -111,7 +132,7 @@ export default function AiPracticePage() {
               <select value={chapter} onChange={e => onChapter(e.target.value)}
                 className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-400">
                 <option value="">All chapters</option>
-                {filters.chapters.map(c => <option key={c} value={c}>{c}</option>)}
+                {chapterOptions.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
           </div>
@@ -183,7 +204,7 @@ function QuestionRow({ q, open, onToggle, quota, onQuota }) {
           {q.originalQuestion?.marks != null && <span className="text-[10px] text-gray-500">{q.originalQuestion.marks} marks</span>}
           <span className="text-[10px] text-gray-400 ml-auto">{q.subject} · {q.chapter}</span>
         </div>
-        <p className="text-sm text-gray-800 line-clamp-2">{(q.originalQuestion?.text || '').slice(0, 220)}</p>
+        <p className="text-sm text-gray-800 line-clamp-2">{previewText(q.originalQuestion?.text).slice(0, 220)}</p>
       </button>
 
       {open && (
@@ -206,10 +227,14 @@ function QuestionRow({ q, open, onToggle, quota, onQuota }) {
                 </div>
               )}
 
-              <button onClick={generate} disabled={busy || outOfQuota}
-                className="mt-4 w-full py-3 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400">
-                {busy ? 'Generating… (may take a few seconds)' : outOfQuota ? 'No generations left this month' : '✨ Generate a similar question'}
-              </button>
+              {busy ? (
+                <GeneratingState />
+              ) : (
+                <button onClick={generate} disabled={outOfQuota}
+                  className="mt-4 w-full py-3 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400">
+                  {outOfQuota ? 'No generations left this month' : '✨ Generate a similar question'}
+                </button>
+              )}
               {error && <p className="text-xs text-red-500 mt-2">{error}</p>}
 
               {gen && <GeneratedCard gen={gen} />}
@@ -217,6 +242,48 @@ function QuestionRow({ q, open, onToggle, quota, onQuota }) {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// Generation can take several seconds. A static "please wait" reads as frozen,
+// so we show an animated bar plus rotating status lines that make the AI feel
+// like it's actively working through the problem.
+const GEN_STEPS = [
+  'Reading the original question…',
+  'Understanding the concept and method…',
+  'Picking fresh numbers…',
+  'Building a similar question…',
+  'Working out the solution…',
+  'Double-checking the answer…',
+  'Almost there — finishing up…',
+]
+
+function GeneratingState() {
+  const [step, setStep] = useState(0)
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      // hold on the last step rather than looping back to the start
+      setStep(s => (s < GEN_STEPS.length - 1 ? s + 1 : s))
+    }, 1800)
+    return () => clearInterval(t)
+  }, [])
+
+  return (
+    <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/60 p-4">
+      <div className="flex items-center gap-2.5">
+        <span className="relative flex h-4 w-4">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-60" />
+          <span className="relative inline-flex rounded-full h-4 w-4 bg-indigo-600" />
+        </span>
+        <span key={step} className="text-sm font-semibold text-indigo-800 gen-fade">
+          {GEN_STEPS[step]}
+        </span>
+      </div>
+      <div className="mt-3 h-1.5 rounded-full bg-indigo-100 overflow-hidden">
+        <div className="h-full w-1/3 rounded-full bg-indigo-500 gen-slide" />
+      </div>
     </div>
   )
 }

@@ -1,1 +1,14 @@
 @import "tailwindcss";
+
+/* AI Practice — "generating" indicator animations */
+@keyframes gen-slide {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+.gen-slide { animation: gen-slide 1.3s ease-in-out infinite; }
+
+@keyframes gen-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.gen-fade { animation: gen-fade 0.4s ease-out; }
