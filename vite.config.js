@@ -10,4 +10,8 @@ export default defineConfig({
     tailwindcss(),
     babel({ presets: [reactCompilerPreset()] })
   ],
+  // Allow access through dev tunnels (cloudflared / ngrok) for mobile testing.
+  server: {
+    allowedHosts: true,
+  },
 })
