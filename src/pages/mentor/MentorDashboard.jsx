@@ -64,7 +64,7 @@ export default function MentorDashboard() {
   ]
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 md:p-6 space-y-6">
       {/* Hero */}
       <div className="bg-gradient-to-r from-teal-600 to-emerald-600 rounded-3xl p-6 text-white">
         <p className="text-teal-200 text-sm font-medium">{getGreeting()},</p>

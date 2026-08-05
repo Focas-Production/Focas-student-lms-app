@@ -39,9 +39,14 @@ function exportCsv(title, roster, classInfo) {
   lines.push(csvRow(['Participants', roster.length]))
   lines.push('')
 
-  // Per-person summary
+  // Per-person summary. Present / chapter verdict columns appear once the class
+  // has ended and the server has attached per-student records.
+  const hasRecords = roster.some((p) => p.record)
   lines.push(csvRow(['SUMMARY']))
-  lines.push(csvRow(['Name', 'Role', 'Times Joined', 'First Join', 'Last Leave', 'Total Time (min)', 'Total Time', 'Currently In Class']))
+  lines.push(csvRow([
+    'Name', 'Role', 'Times Joined', 'First Join', 'Last Leave', 'Total Time (min)', 'Total Time', 'Currently In Class',
+    ...(hasRecords ? ['Attended %', 'Present', 'Chapter Completed', 'Marked'] : []),
+  ]))
   for (const p of roster) {
     lines.push(csvRow([
       p.name || 'Unknown',
@@ -52,6 +57,12 @@ function exportCsv(title, roster, classInfo) {
       mins(p.totalMs),
       fmtDur(p.totalMs),
       p.live ? 'Yes' : 'No',
+      ...(hasRecords ? (p.record ? [
+        `${p.record.percent}%`,
+        p.record.present ? 'Present' : 'Absent',
+        p.record.chapterCompleted ? 'Yes' : 'No',
+        p.record.presentSource === 'manual' || p.record.chapterSource === 'manual' ? `edited by ${p.record.markedByName || 'mentor'}` : 'auto',
+      ] : ['', '', '', '']) : []),
     ]))
   }
   lines.push('')
@@ -101,11 +112,32 @@ function exportCsv(title, roster, classInfo) {
   URL.revokeObjectURL(url)
 }
 
-// roster: null = loading; [] = empty; else array of participant summaries with sessions[]
-export default function AttendanceModal({ title, roster, classInfo, onClose, accent = 'teal' }) {
+// roster: null = loading; [] = empty; else array of participant summaries with sessions[].
+// After a class ends the server attaches p.record (present / chapterCompleted verdicts);
+// pass onToggleRecord(userId, patch) to let the viewer override them.
+export default function AttendanceModal({ title, roster, classInfo, meta, onToggleRecord, onClose, accent = 'teal' }) {
   const [expanded, setExpanded] = useState(null)
+  const [saving, setSaving] = useState(null)   // `${userId}:${field}` while a toggle is in flight
   const badgeHost = accent === 'blue' ? 'bg-blue-100 text-blue-700' : 'bg-teal-100 text-teal-700'
   const runMs = meetingMs(classInfo)
+
+  const hasRecords = !!roster?.some((p) => p.record)
+  const chapterLabel = meta?.unitName || meta?.chapterName || ''
+  // Per-student chapter completion only appears once the mentor has marked the
+  // chapter/unit done in syllabus progress — before that there's nothing to edit.
+  const showChapter = hasRecords && !!chapterLabel && !!meta?.itemCompleted
+  const cols = 5 + (hasRecords ? 2 : 0) + (showChapter ? 1 : 0)
+
+  const toggle = async (p, field) => {
+    if (!onToggleRecord || !p.userId || saving) return
+    const key = `${p.userId}:${field}`
+    setSaving(key)
+    try {
+      await onToggleRecord(p.userId, field === 'present'
+        ? { present: !p.record.present }
+        : { chapterCompleted: !p.record.chapterCompleted })
+    } finally { setSaving(null) }
+  }
 
   // Class-wide rollups for the footer.
   const stats = (roster && roster.length) ? (() => {
@@ -117,12 +149,13 @@ export default function AttendanceModal({ title, roster, classInfo, onClose, acc
       currentlyIn: roster.filter((p) => p.live).length,
       totalTimeMs: roster.reduce((s, p) => s + (p.totalMs || 0), 0),
       avgStudentMs: students.length ? students.reduce((s, p) => s + (p.totalMs || 0), 0) / students.length : 0,
+      presentCount: students.filter((p) => p.record?.present).length,
     }
   })() : null
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className={`bg-white rounded-2xl shadow-xl w-full ${hasRecords ? 'max-w-3xl' : 'max-w-2xl'} max-h-[85vh] flex flex-col`} onClick={e => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="text-sm font-bold text-gray-900">Attendance</p>
@@ -158,6 +191,9 @@ export default function AttendanceModal({ title, roster, classInfo, onClose, acc
                     <th className="text-left pb-2 font-semibold">First join</th>
                     <th className="text-left pb-2 font-semibold">Last leave</th>
                     <th className="text-right pb-2 font-semibold">Total</th>
+                    {hasRecords && <th className="text-center pb-2 font-semibold">%</th>}
+                    {hasRecords && <th className="text-center pb-2 font-semibold">Present</th>}
+                    {showChapter && <th className="text-center pb-2 font-semibold" title={chapterLabel}>Chapter</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -176,11 +212,51 @@ export default function AttendanceModal({ title, roster, classInfo, onClose, acc
                           <td className="py-2.5 text-gray-500">{fmtTime(p.firstJoin)}</td>
                           <td className="py-2.5 text-gray-500">{p.live ? '—' : fmtTime(p.lastLeave)}</td>
                           <td className="py-2.5 text-right text-gray-900 font-medium">{fmtDur(p.totalMs)}</td>
+                          {hasRecords && (
+                            <td className="py-2.5 text-center text-gray-500">
+                              {p.record ? `${p.record.percent}%` : '—'}
+                            </td>
+                          )}
+                          {hasRecords && (
+                            <td className="py-2.5 text-center">
+                              {p.record ? (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); toggle(p, 'present') }}
+                                  disabled={!onToggleRecord || saving === `${p.userId}:present`}
+                                  title={`${p.record.presentSource === 'manual' ? `Edited by ${p.record.markedByName || 'mentor'}` : 'Auto-marked'}${onToggleRecord ? ' · click to change' : ''}`}
+                                  className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase transition disabled:opacity-50 ${
+                                    p.record.present ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-red-100 text-red-700 hover:bg-red-200'
+                                  } ${onToggleRecord ? 'cursor-pointer' : 'cursor-default'}`}>
+                                  {p.record.present ? 'Present' : 'Absent'}
+                                  {p.record.presentSource === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
+                                </button>
+                              ) : <span className="text-gray-300">—</span>}
+                            </td>
+                          )}
+                          {showChapter && (
+                            <td className="py-2.5 text-center">
+                              {p.record ? (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); toggle(p, 'chapter') }}
+                                  disabled={!onToggleRecord || saving === `${p.userId}:chapter`}
+                                  title={`${chapterLabel} · ${p.record.chapterSource === 'manual' ? `edited by ${p.record.markedByName || 'mentor'}` : 'auto: completes when the chapter is marked done in syllabus progress AND attendance across its sessions meets the threshold'}${onToggleRecord ? ' · click to change' : ''}`}
+                                  className={`text-[10px] font-bold px-2 py-1 rounded-md transition disabled:opacity-50 ${
+                                    p.record.chapterCompleted ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                                  } ${onToggleRecord ? 'cursor-pointer' : 'cursor-default'}`}>
+                                  {p.record.chapterCompleted ? '✓ Done' : 'Not done'}
+                                  {p.record.chapterSource === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
+                                </button>
+                              ) : <span className="text-gray-300">—</span>}
+                            </td>
+                          )}
                         </tr>
                         {open && (
                           <tr>
-                            <td colSpan={5} className="pb-3 pl-6">
+                            <td colSpan={cols} className="pb-3 pl-6">
                               <div className="bg-gray-50 rounded-lg p-3 space-y-1.5">
+                                {!(p.sessions || []).length && (
+                                  <p className="text-xs text-gray-400">Never joined this class.</p>
+                                )}
                                 {(p.sessions || []).map((s, si) => (
                                   <div key={si} className="flex items-center justify-between text-xs">
                                     <span className="text-gray-400">Session {si + 1}</span>
@@ -208,6 +284,12 @@ export default function AttendanceModal({ title, roster, classInfo, onClose, acc
             {runMs != null && <span className="text-gray-500">Class duration <b className="text-gray-900">{fmtDur(runMs)}</b></span>}
             <span className="text-gray-500">Participants <b className="text-gray-900">{stats.participants}</b></span>
             <span className="text-gray-500">Students <b className="text-gray-900">{stats.students}</b></span>
+            {hasRecords && (
+              <span className="text-gray-500">
+                Present <b className="text-emerald-700">{stats.presentCount}/{stats.students}</b>
+                {meta?.thresholdPercent != null && <span className="text-gray-400"> (≥{meta.thresholdPercent}% of class)</span>}
+              </span>
+            )}
             <span className="text-gray-500">Total joins <b className="text-gray-900">{stats.totalJoins}</b></span>
             {stats.currentlyIn > 0 && <span className="text-gray-500">In class now <b className="text-red-600">{stats.currentlyIn}</b></span>}
             <span className="text-gray-500">Avg student time <b className="text-gray-900">{fmtDur(stats.avgStudentMs)}</b></span>

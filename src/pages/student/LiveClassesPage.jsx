@@ -41,7 +41,12 @@ export default function LiveClassesPage() {
     setJoining(cls._id); setError('')
     try {
       const d = await apiFetch(`/api/live-classes/${cls._id}/join-token`)
-      setSession({ token: d.token, wsUrl: d.wsUrl, title: d.liveClass?.title || cls.title })
+      setSession({
+        token: d.token,
+        wsUrl: d.wsUrl,
+        title: d.liveClass?.title || cls.title,
+        subtitle: [d.liveClass?.roomLabel, d.liveClass?.trackLabel].filter(Boolean).join(' · '),
+      })
     } catch (e) {
       setError(e.message || 'Could not join the class')
     } finally {
@@ -59,6 +64,7 @@ export default function LiveClassesPage() {
           wsUrl={session.wsUrl}
           canHost={false}
           title={session.title}
+          subtitle={session.subtitle}
           onLeave={leave}
         />
       </Suspense>
@@ -68,7 +74,7 @@ export default function LiveClassesPage() {
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto">
       <div className="mb-5">
-        <h1 className="text-2xl font-bold text-gray-900">Live Classes</h1>
+        <h1 className="text-xl md:text-2xl font-bold text-gray-900">Live Classes</h1>
         <p className="text-gray-400 text-sm mt-1">Join your live sessions with mentors. Classes appear here once scheduled.</p>
       </div>
 
@@ -86,27 +92,37 @@ export default function LiveClassesPage() {
           {classes.map((c) => {
             const live = c.status === 'live'
             return (
-              <div key={c._id} className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-4">
+              <div key={c._id} className="bg-white rounded-2xl shadow-sm p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                       live ? 'bg-red-100 text-red-700' : 'bg-sky-100 text-sky-700'}`}>
                       {live ? '● LIVE' : 'Upcoming'}
                     </span>
+                    {c.roomLabel && (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">
+                        {c.roomLabel} · {c.trackLabel}
+                      </span>
+                    )}
                     {c.hostName && <span className="text-[11px] text-gray-400">with {c.hostName}</span>}
                   </div>
                   <p className="text-sm font-semibold text-gray-900 truncate">{c.title}</p>
+                  {c.chapterName && (
+                    <p className="text-xs text-indigo-500 truncate mt-0.5">
+                      📖 {c.subjectName ? `${c.subjectName} · ` : ''}{c.chapterName}{c.unitName ? ` · ${c.unitName}` : ''}
+                    </p>
+                  )}
                   {c.description && <p className="text-xs text-gray-500 line-clamp-1 mt-0.5">{c.description}</p>}
                   <p className="text-xs text-gray-400 mt-1">{fmtWhen(c.scheduledStart)}</p>
                 </div>
 
                 {live ? (
                   <button onClick={() => join(c)} disabled={joining === c._id}
-                    className="px-4 py-2.5 rounded-xl bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:bg-gray-200 disabled:text-gray-400 whitespace-nowrap">
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:bg-gray-200 disabled:text-gray-400 whitespace-nowrap flex-shrink-0">
                     {joining === c._id ? 'Joining…' : 'Join now'}
                   </button>
                 ) : (
-                  <span className="px-4 py-2.5 rounded-xl bg-gray-100 text-gray-400 text-sm font-semibold whitespace-nowrap">
+                  <span className="w-full sm:w-auto text-center px-4 py-2.5 rounded-xl bg-gray-100 text-gray-400 text-sm font-semibold whitespace-nowrap flex-shrink-0">
                     Not started
                   </span>
                 )}

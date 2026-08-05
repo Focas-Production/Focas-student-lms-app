@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth, getRole } from './AuthContext'
 
 const API_BASE = import.meta.env.VITE_API_BASE
@@ -7,6 +7,17 @@ const API_BASE = import.meta.env.VITE_API_BASE
 export default function LoginPage() {
   const { login } = useAuth()
   const navigate   = useNavigate()
+  const [searchParams] = useSearchParams()
+
+  // Where to land after a successful login. ProtectedRoute sets ?next= when it
+  // bounces a shared link (e.g. a track's permanent /live/... URL) to the login
+  // page. Only same-origin paths are honoured — an absolute URL here would be an
+  // open redirect.
+  const nextParam = searchParams.get('next')
+  const safeNext = nextParam && nextParam.startsWith('/') && !nextParam.startsWith('//')
+    ? nextParam
+    : null
+  const landingFor = (role) => safeNext || (role === 'mentor' ? '/mentor' : '/student')
 
   const [tab, setTab]             = useState('phone')
   const [identifier, setIdentifier] = useState('')
@@ -93,7 +104,7 @@ export default function LoginPage() {
 
       login(data.user, data.token)
       const role = getRole(data.user)
-      navigate(role === 'mentor' ? '/mentor' : '/student', { replace: true })
+      navigate(landingFor(role), { replace: true })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -135,7 +146,7 @@ export default function LoginPage() {
 
       login(data.user, data.token)
       const role = getRole(data.user)
-      navigate(role === 'mentor' ? '/mentor' : '/student', { replace: true })
+      navigate(landingFor(role), { replace: true })
     } catch (err) {
       setError(err.message)
     } finally {

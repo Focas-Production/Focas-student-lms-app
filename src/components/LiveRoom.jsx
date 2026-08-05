@@ -7,6 +7,11 @@ import ErrorBoundary from './ErrorBoundary'
 // icons on narrow screens, chat becomes a full-screen overlay on mobile, and the
 // stage switches between grid and screen-share focus automatically. It also
 // renders room audio and handles connection/reconnection states internally.
+//
+// Optional host-only props enable the track switcher:
+//   tracks        — [{ roomLabel, trackLabel, classId, title }]
+//   activeClassId — which of them we're currently connected to
+//   onSwitchTrack(classId), switching
 export default function LiveRoom(props) {
   return (
     <ErrorBoundary onReset={props.onLeave}>
@@ -15,10 +20,28 @@ export default function LiveRoom(props) {
   )
 }
 
-function LiveRoomInner({ token, wsUrl, title, onLeave }) {
+function LiveRoomInner({
+  token, wsUrl, title, subtitle, onLeave, canHost,
+  tracks, activeClassId, onSwitchTrack, switching, mirrors, onToggleMirror, notice,
+}) {
+  // Hosts get an "are you sure" on LiveKit's Leave button — one mis-click would
+  // drop the session, and an empty room ends the class shortly after. Caught in
+  // the capture phase so we can veto the click before LiveKit disconnects.
+  const guardLeave = (e) => {
+    if (!canHost) return
+    const leaveBtn = e.target.closest?.('.lk-disconnect-button')
+    if (leaveBtn && !window.confirm('Leave this class session? If nobody stays in the room, the class will end for everyone.')) {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+  }
+
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: '#0b0b0f' }}>
+    <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: '#0b0b0f' }} onClickCapture={guardLeave}>
       <LiveKitRoom
+        // Keyed on the token so switching tracks tears the old connection down and
+        // reconnects cleanly — LiveKitRoom won't re-handshake a live room in place.
+        key={token}
         token={token}
         serverUrl={wsUrl}
         connect
@@ -34,13 +57,119 @@ function LiveRoomInner({ token, wsUrl, title, onLeave }) {
             position: 'absolute', top: 8, left: 8, zIndex: 20,
             background: 'rgba(0,0,0,0.55)', color: '#fff', fontSize: 12, fontWeight: 600,
             padding: '4px 10px', borderRadius: 8, pointerEvents: 'none',
-            maxWidth: '70vw', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            maxWidth: '55vw', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
-            🔴 {title}
+            🔴 {title}{subtitle ? ` · ${subtitle}` : ''}
           </div>
         )}
+
+        {onSwitchTrack && (
+          <TrackSwitcher
+            tracks={tracks || []}
+            activeClassId={activeClassId}
+            onSwitchTrack={onSwitchTrack}
+            switching={switching}
+            mirrors={mirrors || []}
+            onToggleMirror={onToggleMirror}
+          />
+        )}
+
+        {/* A failed hop (track taken, booked in a moment) has to surface in here —
+            the page behind the room is not visible while hosting. */}
+        {notice && (
+          <div style={{
+            position: 'absolute', top: 44, right: 8, zIndex: 21,
+            background: 'rgba(127,29,29,0.92)', color: '#fff',
+            fontSize: 11, fontWeight: 600, padding: '6px 10px', borderRadius: 8,
+            maxWidth: '52vw', border: '1px solid rgba(248,113,113,0.5)',
+          }}>
+            {notice}
+          </div>
+        )}
+
         <VideoConference />
       </LiveKitRoom>
+    </div>
+  )
+}
+
+// Host-only overlay for hopping between tracks. Every track in the topology is
+// shown, not just the busy ones — a host can open a free track too, and hiding
+// them would make switching look unavailable. Sits top-right, clear of the title
+// chip and the bottom control bar.
+const STATE_DOT = {
+  live:      '#f87171',   // running now
+  scheduled: '#facc15',   // booked and due — entering starts it
+  idle:      '#6b7280',   // nothing scheduled to enter
+  busy:      '#9ca3af',   // someone else's class; not enterable
+}
+
+function TrackSwitcher({ tracks, activeClassId, onSwitchTrack, switching, mirrors = [], onToggleMirror }) {
+  if (tracks.length < 2) return null
+
+  return (
+    <div style={{
+      position: 'absolute', top: 8, right: 8, zIndex: 20,
+      display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 4,
+      maxWidth: '52vw',
+    }}>
+      {tracks.map((t) => {
+        const active = !!t.classId && t.classId === activeClassId
+        const blocked = t.state === 'busy' || t.state === 'idle'
+        const disabled = active || blocked || !!switching
+        const hint = active ? 'You are here'
+          : t.state === 'busy' ? `Hosted by ${t.hostName || 'another host'}`
+          : t.state === 'idle' ? 'Nothing scheduled here'
+          : t.state === 'scheduled' ? `${t.title} — entering will start it`
+          : t.title || ''
+        const mirrorOn = mirrors.includes(`${t.roomKey}/${t.trackKey}`)
+        // Mirroring targets a track the host may enter that isn't the current one;
+        // an idle track has no class to receive the broadcast.
+        const canMirror = !!onToggleMirror && !active && t.state !== 'busy' && t.state !== 'idle'
+        return (
+          <span key={`${t.roomKey}/${t.trackKey}`} style={{ display: 'inline-flex' }}>
+            <button
+              onClick={() => !disabled && onSwitchTrack(t)}
+              disabled={disabled}
+              title={`${t.roomLabel} · ${t.trackLabel}${hint ? ` — ${hint}` : ''}`}
+              style={{
+                background: active ? '#0d9488' : 'rgba(0,0,0,0.55)',
+                color: blocked ? 'rgba(255,255,255,0.45)' : '#fff',
+                border: `1px solid ${active ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
+                fontSize: 11, fontWeight: 600, padding: '5px 10px',
+                borderRadius: canMirror ? '8px 0 0 8px' : 8,
+                cursor: disabled ? 'default' : 'pointer',
+                opacity: switching && !active ? 0.5 : 1,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {!active && (
+                <span style={{ color: STATE_DOT[t.state] || '#9ca3af', marginRight: 5 }}>●</span>
+              )}
+              {t.roomLabel} · {t.trackLabel}
+            </button>
+            {/* One-way mirror toggle: broadcast into this track without leaving
+                the current one. Solid teal while the mirror is running. */}
+            {canMirror && (
+              <button
+                onClick={() => !switching && onToggleMirror(t)}
+                disabled={!!switching}
+                title={mirrorOn
+                  ? `Stop broadcasting into ${t.roomLabel} · ${t.trackLabel}`
+                  : `Broadcast your camera & mic into ${t.roomLabel} · ${t.trackLabel} (one-way — you won't see or hear them)`}
+                style={{
+                  background: mirrorOn ? '#0d9488' : 'rgba(0,0,0,0.55)',
+                  color: mirrorOn ? '#fff' : '#5eead4',
+                  border: `1px solid ${mirrorOn ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
+                  borderLeft: 'none',
+                  fontSize: 11, fontWeight: 700, padding: '5px 8px', borderRadius: '0 8px 8px 0',
+                  cursor: switching ? 'default' : 'pointer', whiteSpace: 'nowrap',
+                }}
+              >📡</button>
+            )}
+          </span>
+        )
+      })}
     </div>
   )
 }

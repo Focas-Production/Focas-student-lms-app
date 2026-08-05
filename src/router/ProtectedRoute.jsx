@@ -1,8 +1,9 @@
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 
 export default function ProtectedRoute({ children, requiredRole }) {
   const { user, role, loading } = useAuth()
+  const location = useLocation()
 
   if (loading) {
     return (
@@ -12,7 +13,12 @@ export default function ProtectedRoute({ children, requiredRole }) {
     )
   }
 
-  if (!user) return <Navigate to="/login" replace />
+  // Carry the destination through login, so a shared link (a track's permanent
+  // /live/... URL, say) still lands where it pointed rather than on the dashboard.
+  if (!user) {
+    const next = encodeURIComponent(location.pathname + location.search)
+    return <Navigate to={`/login?next=${next}`} replace />
+  }
 
   if (requiredRole && role !== requiredRole) {
     return <Navigate to={role === 'mentor' ? '/mentor' : '/student'} replace />

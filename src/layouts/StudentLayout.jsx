@@ -7,19 +7,23 @@ const NAV = [
     icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>,
   },
   {
-    to: '/student/courses', label: 'My Courses',
+    to: '/student/courses', label: 'My Courses', short: 'Courses',
     icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>,
   },
   {
-    to: '/student/test-series', label: 'Test Series',
+    to: '/student/test-series', label: 'Test Series', short: 'Tests',
     icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>,
   },
   {
-    to: '/student/live-classes', label: 'Live Classes',
+    to: '/student/live-classes', label: 'Live Classes', short: 'Live',
     icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>,
   },
   {
-    to: '/student/ai-practice', label: 'AI Practice',
+    to: '/student/progress', label: 'Progress',
+    icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>,
+  },
+  {
+    to: '/student/ai-practice', label: 'AI Practice', short: 'AI',
     icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>,
   },
   {
@@ -91,15 +95,18 @@ export default function StudentLayout() {
           <Outlet />
         </main>
 
-        {/* Bottom nav — mobile only */}
-        <nav className="md:hidden bg-white border-t border-gray-100 flex items-center sticky bottom-0 z-10">
+        {/* Bottom nav — mobile only. Short labels keep all items on one row at
+            phone widths; the sidebar shows the full names on desktop. */}
+        <nav className="md:hidden bg-white border-t border-gray-100 flex items-stretch sticky bottom-0 z-10">
           {NAV.map(item => (
             <NavLink key={item.to} to={item.to} end={item.end}
               className={({ isActive }) =>
-                `flex-1 flex flex-col items-center gap-0.5 py-2.5 transition-colors ${isActive ? 'text-indigo-600' : 'text-gray-400'}`
+                `flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-2 px-0.5 transition-colors ${isActive ? 'text-indigo-600' : 'text-gray-400'}`
               }>
               {item.icon}
-              <span className="text-xs font-medium">{item.label}</span>
+              <span className="text-[10px] font-medium leading-tight truncate max-w-full">
+                {item.short || item.label}
+              </span>
             </NavLink>
           ))}
         </nav>
