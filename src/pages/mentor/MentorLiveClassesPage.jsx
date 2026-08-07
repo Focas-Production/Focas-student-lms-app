@@ -42,6 +42,36 @@ export default function MentorLiveClassesPage() {
   const [mirrors, setMirrors]       = useState([]) // "roomKey/trackKey" tracks receiving our mirror
   const [syllabus, setSyllabus]     = useState(null) // subjects with chapter/unit completion
   const [attendance, setAttendance] = useState(null)
+  const [toast, setToast]           = useState('')   // transient in-room chip (hand raises)
+  const toastTimer = useRef(null)
+  const audioCtxRef = useRef(null)
+
+  // Soft two-note "ding" for a raised hand, synthesized so there's no audio
+  // asset to load. The AudioContext is created lazily on first use — by then
+  // the mentor has clicked Start/Enter, so autoplay policy allows it.
+  const playDing = () => {
+    try {
+      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+      const ctx = audioCtxRef.current
+      if (ctx.state === 'suspended') ctx.resume()
+      const note = (freq, at) => {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'sine'
+        osc.frequency.value = freq
+        gain.gain.setValueAtTime(0.0001, at)
+        gain.gain.exponentialRampToValueAtTime(0.18, at + 0.02)
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.45)
+        osc.connect(gain).connect(ctx.destination)
+        osc.start(at)
+        osc.stop(at + 0.5)
+      }
+      note(880, ctx.currentTime)          // A5
+      note(1174.66, ctx.currentTime + 0.12) // D6
+    } catch {
+      // No audio available (rare) — the toast and badge still show.
+    }
+  }
 
   // A late "disconnected" event from a torn-down room must not evict us from the
   // one we just switched into — see leaveFrom().
@@ -118,6 +148,26 @@ export default function MentorLiveClassesPage() {
     return () => clearInterval(t)
   }, [session, loadRoomTracks])
 
+  // Server-pushed notifications, relayed through the LiveKit data channel of
+  // whichever room we're connected to. Hand raises can come from ANY track —
+  // including one we're not in — so the badge/toast names the track.
+  const onHandEvent = useCallback((p) => {
+    if (p?.type !== 'hand') return
+    // The payload's count is authoritative (same store the 20s poll reads).
+    setRoomTracks(ts => ts.map(t =>
+      t.roomKey === p.roomKey && t.trackKey === p.trackKey
+        ? { ...t, handsRaised: p.count }
+        : t,
+    ))
+    if (p.raised) {
+      playDing()
+      setToast(`🖐 ${p.student?.name || 'A student'} raised a hand in ${p.roomLabel} · ${p.trackLabel}`)
+      clearTimeout(toastTimer.current)
+      toastTimer.current = setTimeout(() => setToast(''), 6000)
+    }
+  }, [])
+  useEffect(() => () => clearTimeout(toastTimer.current), [])
+
   const sessionFrom = (d, fallbackTitle) => {
     const c = d.liveClass || {}
     return {
@@ -182,7 +232,7 @@ export default function MentorLiveClassesPage() {
 
   // Hop to the other track in this room and remount — LiveRoom is keyed on the
   // token, so the old connection is fully dropped. The server enters the class
-  // already running there, or starts the booking that's due.
+  // already running there, or starts that track's next booking on the way in.
   const switchTrack = async (track) => {
     if (switching || !track) return
     // One mis-click shouldn't pull the host out of a room mid-class — confirm
@@ -272,6 +322,8 @@ export default function MentorLiveClassesPage() {
           mirrors={mirrors}
           onToggleMirror={toggleMirror}
           notice={error}
+          toast={toast}
+          onHandEvent={onHandEvent}
           onLeave={() => leaveFrom(session.token)}
         />
       </Suspense>

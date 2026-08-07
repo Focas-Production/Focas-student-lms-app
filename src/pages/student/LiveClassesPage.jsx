@@ -15,9 +15,10 @@ function fmtWhen(d) {
 
 export default function LiveClassesPage() {
   const [classes, setClasses] = useState(null)
-  const [session, setSession] = useState(null)   // { token, wsUrl, title } while in a room
+  const [session, setSession] = useState(null)   // { classId, token, wsUrl, title } while in a room
   const [joining, setJoining] = useState(null)    // id being joined
   const [error, setError]     = useState('')
+  const [handRaised, setHandRaised] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -41,7 +42,9 @@ export default function LiveClassesPage() {
     setJoining(cls._id); setError('')
     try {
       const d = await apiFetch(`/api/live-classes/${cls._id}/join-token`)
+      setHandRaised(false)   // the server drops any stale hand on (re)join
       setSession({
+        classId: cls._id,
         token: d.token,
         wsUrl: d.wsUrl,
         title: d.liveClass?.title || cls.title,
@@ -54,7 +57,21 @@ export default function LiveClassesPage() {
     }
   }
 
-  const leave = () => { setSession(null); load() }
+  const leave = () => { setSession(null); setHandRaised(false); load() }
+
+  // 🖐 toggle — the server notifies the host, even when they're currently
+  // teaching in the other track of the room.
+  const toggleHand = async () => {
+    const next = !handRaised
+    try {
+      await apiFetch(`/api/live-classes/${session.classId}/hand`, {
+        method: 'POST', body: JSON.stringify({ raised: next }),
+      })
+      setHandRaised(next)
+    } catch {
+      // Best-effort — a failed raise just leaves the button as it was.
+    }
+  }
 
   if (session) {
     return (
@@ -65,6 +82,8 @@ export default function LiveClassesPage() {
           canHost={false}
           title={session.title}
           subtitle={session.subtitle}
+          onRaiseHand={toggleHand}
+          handRaised={handRaised}
           onLeave={leave}
         />
       </Suspense>

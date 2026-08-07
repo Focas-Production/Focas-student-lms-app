@@ -1,6 +1,10 @@
-import { LiveKitRoom, VideoConference } from '@livekit/components-react'
+import { LiveKitRoom, VideoConference, useDataChannel } from '@livekit/components-react'
 import '@livekit/components-styles'
 import ErrorBoundary from './ErrorBoundary'
+
+// Topic of server-pushed data messages (hand raises etc.) — must match the
+// server's NOTIFY_TOPIC in services/livekitService.js.
+const NOTIFY_TOPIC = 'focas-notify'
 
 // The live class room. Uses LiveKit's prebuilt <VideoConference>, which is fully
 // responsive (phone / tablet / laptop / desktop): the control bar collapses to
@@ -9,9 +13,14 @@ import ErrorBoundary from './ErrorBoundary'
 // renders room audio and handles connection/reconnection states internally.
 //
 // Optional host-only props enable the track switcher:
-//   tracks        — [{ roomLabel, trackLabel, classId, title }]
+//   tracks        — [{ roomLabel, trackLabel, classId, title, handsRaised }]
 //   activeClassId — which of them we're currently connected to
 //   onSwitchTrack(classId), switching
+//   onHandEvent   — server-pushed notifications (a hand raised in any track)
+//   toast         — transient info chip (e.g. "X raised a hand in Track 2")
+//
+// Optional student-only props:
+//   onRaiseHand, handRaised — the 🖐 toggle; the server relays it to the host
 export default function LiveRoom(props) {
   return (
     <ErrorBoundary onReset={props.onLeave}>
@@ -23,6 +32,7 @@ export default function LiveRoom(props) {
 function LiveRoomInner({
   token, wsUrl, title, subtitle, onLeave, canHost,
   tracks, activeClassId, onSwitchTrack, switching, mirrors, onToggleMirror, notice,
+  onHandEvent, toast, onRaiseHand, handRaised,
 }) {
   // Hosts get an "are you sure" on LiveKit's Leave button — one mis-click would
   // drop the session, and an empty room ends the class shortly after. Caught in
@@ -74,23 +84,73 @@ function LiveRoomInner({
           />
         )}
 
-        {/* A failed hop (track taken, booked in a moment) has to surface in here —
-            the page behind the room is not visible while hosting. */}
-        {notice && (
+        {/* Errors and toasts have to surface in here — the page behind the room
+            is not visible while in a class. Stacked so both can show at once. */}
+        {(notice || toast) && (
           <div style={{
             position: 'absolute', top: 44, right: 8, zIndex: 21,
-            background: 'rgba(127,29,29,0.92)', color: '#fff',
-            fontSize: 11, fontWeight: 600, padding: '6px 10px', borderRadius: 8,
-            maxWidth: '52vw', border: '1px solid rgba(248,113,113,0.5)',
+            display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4,
+            maxWidth: '52vw',
           }}>
-            {notice}
+            {notice && (
+              <div style={{
+                background: 'rgba(127,29,29,0.92)', color: '#fff',
+                fontSize: 11, fontWeight: 600, padding: '6px 10px', borderRadius: 8,
+                border: '1px solid rgba(248,113,113,0.5)',
+              }}>
+                {notice}
+              </div>
+            )}
+            {toast && (
+              <div style={{
+                background: 'rgba(0,0,0,0.75)', color: '#fef3c7',
+                fontSize: 11, fontWeight: 600, padding: '6px 10px', borderRadius: 8,
+                border: '1px solid rgba(250,204,21,0.5)',
+              }}>
+                {toast}
+              </div>
+            )}
           </div>
         )}
+
+        {/* Students: raise/lower a hand. The server relays it to the host even
+            if they're currently teaching in the other track. */}
+        {onRaiseHand && (
+          <button
+            onClick={onRaiseHand}
+            title={handRaised ? 'Lower your hand' : 'Raise your hand — the mentor gets notified'}
+            style={{
+              position: 'absolute', top: 8, right: 8, zIndex: 20,
+              background: handRaised ? '#ca8a04' : 'rgba(0,0,0,0.55)',
+              color: '#fff',
+              border: `1px solid ${handRaised ? '#facc15' : 'rgba(255,255,255,0.18)'}`,
+              fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
+              cursor: 'pointer', whiteSpace: 'nowrap',
+            }}
+          >
+            🖐 {handRaised ? 'Hand raised' : 'Raise hand'}
+          </button>
+        )}
+
+        {onHandEvent && <NotifyListener onEvent={onHandEvent} />}
 
         <VideoConference />
       </LiveKitRoom>
     </div>
   )
+}
+
+// Receives server-pushed data messages (topic "focas-notify") and hands the
+// decoded payload to the page. Must live inside <LiveKitRoom> for room context.
+function NotifyListener({ onEvent }) {
+  useDataChannel(NOTIFY_TOPIC, (msg) => {
+    try {
+      onEvent(JSON.parse(new TextDecoder().decode(msg.payload)))
+    } catch {
+      // Not JSON / not ours — ignore.
+    }
+  })
+  return null
 }
 
 // Host-only overlay for hopping between tracks. Every track in the topology is
@@ -147,6 +207,16 @@ function TrackSwitcher({ tracks, activeClassId, onSwitchTrack, switching, mirror
                 <span style={{ color: STATE_DOT[t.state] || '#9ca3af', marginRight: 5 }}>●</span>
               )}
               {t.roomLabel} · {t.trackLabel}
+              {/* Students with a hand up in this track — live via data push,
+                  refreshed by the 20s poll. */}
+              {t.handsRaised > 0 && (
+                <span style={{
+                  marginLeft: 6, background: '#ca8a04', color: '#fff',
+                  fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 999,
+                }}>
+                  🖐 {t.handsRaised}
+                </span>
+              )}
             </button>
             {/* One-way mirror toggle: broadcast into this track without leaving
                 the current one. Solid teal while the mirror is running. */}

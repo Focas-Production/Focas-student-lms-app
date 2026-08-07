@@ -19,10 +19,11 @@ export default function TrackRoomPage() {
   const isHost = role === 'mentor' || role === 'admin'
 
   const [status, setStatus]   = useState(null)   // { room, track, liveClass, next }
-  const [session, setSession] = useState(null)
+  const [session, setSession] = useState(null)   // { classId, token, wsUrl, ... }
   const [busy, setBusy]       = useState(false)
   const [error, setError]     = useState('')
   const [notFound, setNotFound] = useState(false)
+  const [handRaised, setHandRaised] = useState(false)
 
   const sessionRef = useRef(null)
   useEffect(() => { sessionRef.current = session }, [session])
@@ -61,7 +62,9 @@ export default function TrackRoomPage() {
         // Students can only join a class that's already running.
         : await apiFetch(`/api/live-classes/${status.liveClass._id}/join-token`)
       const c = d.liveClass
+      setHandRaised(false)   // the server drops any stale hand on (re)join
       setSession({
+        classId: c?._id || status?.liveClass?._id || null,
         token: d.token,
         wsUrl: d.wsUrl,
         title: c?.title || label,
@@ -79,7 +82,23 @@ export default function TrackRoomPage() {
   const leaveFrom = (token) => {
     if (sessionRef.current?.token !== token) return
     setSession(null)
+    setHandRaised(false)
     loadStatus()
+  }
+
+  // 🖐 toggle (students only) — the server notifies the host, even when they're
+  // currently teaching in the other track of the room.
+  const toggleHand = async () => {
+    if (!session?.classId) return
+    const next = !handRaised
+    try {
+      await apiFetch(`/api/live-classes/${session.classId}/hand`, {
+        method: 'POST', body: JSON.stringify({ raised: next }),
+      })
+      setHandRaised(next)
+    } catch {
+      // Best-effort — a failed raise just leaves the button as it was.
+    }
   }
 
   if (session) {
@@ -91,6 +110,8 @@ export default function TrackRoomPage() {
           canHost={isHost}
           title={session.title}
           subtitle={session.subtitle}
+          onRaiseHand={!isHost && session.classId ? toggleHand : undefined}
+          handRaised={handRaised}
           onLeave={() => leaveFrom(session.token)}
         />
       </Suspense>
