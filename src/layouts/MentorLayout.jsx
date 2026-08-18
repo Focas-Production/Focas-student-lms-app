@@ -1,5 +1,6 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import LiveSessionProvider from '../components/LiveSessionProvider'
 
 const NAV_ITEMS = [
   {
@@ -37,6 +38,10 @@ export default function MentorLayout() {
   const navigate = useNavigate()
 
   return (
+    // The live-class room lives in this provider (not in a page), so a mentor
+    // with the meet minimized can browse Submissions/Syllabus/etc. without the
+    // navigation unmounting the room and dropping them from the class.
+    <LiveSessionProvider>
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar — desktop only; phones get the header + bottom nav below. */}
       <aside className="hidden md:flex w-60 bg-teal-900 flex-col flex-shrink-0">
@@ -118,5 +123,6 @@ export default function MentorLayout() {
         </nav>
       </div>
     </div>
+    </LiveSessionProvider>
   )
 }

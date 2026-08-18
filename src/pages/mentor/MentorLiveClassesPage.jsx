@@ -1,10 +1,8 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { apiFetch } from '../../api'
 import AttendanceModal from '../../components/AttendanceModal'
 import SubmissionsModal from '../../components/SubmissionsModal'
-
-// Lazy-loaded so the LiveKit bundle only loads when the mentor actually hosts.
-const LiveRoom = lazy(() => import('../../components/LiveRoom'))
+import { useLiveSession } from '../../components/LiveSessionProvider'
 
 function fmtWhen(d) {
   if (!d) return ''
@@ -32,55 +30,20 @@ const STATUS_STYLE = {
 
 // Mentors host what the admin books for them — they don't schedule. This page is
 // their assignment list plus the controls to run a class.
+//
+// The room itself is NOT rendered here: it lives in LiveSessionProvider at the
+// layout level, so a minimized class survives navigating to other mentor pages.
+// This page starts/enters sessions through the context and reflects their state.
 export default function MentorLiveClassesPage() {
   const [classes, setClasses]   = useState(null)
   const [loadError, setLoadError] = useState('')   // why the list is empty, if it failed
   const [busyId, setBusyId]     = useState(null)
   const [error, setError]       = useState('')
-  const [session, setSession]   = useState(null)   // { classId, roomKey, token, wsUrl, title, subtitle }
-  const [minimized, setMinimized] = useState(false) // room shrunk to a corner window; page usable behind it
-  const [roomTracks, setRoomTracks] = useState([]) // switcher: tracks of the current room only
-  const [switching, setSwitching]   = useState(false)
-  const [mirrors, setMirrors]       = useState([]) // "roomKey/trackKey" tracks receiving our mirror
   const [syllabus, setSyllabus]     = useState(null) // subjects with chapter/unit completion
   const [attendance, setAttendance] = useState(null)
   const [submissions, setSubmissions] = useState(null) // { id, title } while the modal is open
-  const [subCounts, setSubCounts]   = useState({})   // classId → { total, pending }
-  const [toast, setToast]           = useState('')   // transient in-room chip (hand raises, submissions)
-  const toastTimer = useRef(null)
-  const audioCtxRef = useRef(null)
 
-  // Soft two-note "ding" for a raised hand, synthesized so there's no audio
-  // asset to load. The AudioContext is created lazily on first use — by then
-  // the mentor has clicked Start/Enter, so autoplay policy allows it.
-  const playDing = () => {
-    try {
-      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
-      const ctx = audioCtxRef.current
-      if (ctx.state === 'suspended') ctx.resume()
-      const note = (freq, at) => {
-        const osc = ctx.createOscillator()
-        const gain = ctx.createGain()
-        osc.type = 'sine'
-        osc.frequency.value = freq
-        gain.gain.setValueAtTime(0.0001, at)
-        gain.gain.exponentialRampToValueAtTime(0.18, at + 0.02)
-        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.45)
-        osc.connect(gain).connect(ctx.destination)
-        osc.start(at)
-        osc.stop(at + 0.5)
-      }
-      note(880, ctx.currentTime)          // A5
-      note(1174.66, ctx.currentTime + 0.12) // D6
-    } catch {
-      // No audio available (rare) — the toast and badge still show.
-    }
-  }
-
-  // A late "disconnected" event from a torn-down room must not evict us from the
-  // one we just switched into — see leaveFrom().
-  const sessionRef = useRef(null)
-  useEffect(() => { sessionRef.current = session }, [session])
+  const { session, minimized, startOrEnter: enterSession, subCounts, setSubCounts } = useLiveSession()
 
   const load = useCallback(async () => {
     try {
@@ -95,7 +58,13 @@ export default function MentorLiveClassesPage() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  // Reload whenever the hosted session changes (started / switched track / left)
+  // — this also covers first mount, and keeps the list current behind the room.
+  useEffect(() => { load() }, [load, session?.token])
+
+  // Minimizing brings this page back into view mid-class: statuses and
+  // submission badges have usually moved since it was last looked at.
+  useEffect(() => { if (minimized) load() }, [minimized, load])
 
   // Submission badges for every visible class in one request, rather than one
   // per card. Failing silently is right here — a missing badge is a cosmetic
@@ -107,7 +76,7 @@ export default function MentorLiveClassesPage() {
       const d = await apiFetch(`/api/live-classes/manage/submission-counts?ids=${ids.join(',')}`)
       setSubCounts(d.counts || {})
     } catch { /* badge-only data */ }
-  }, [])
+  }, [setSubCounts])
 
   useEffect(() => { if (classes?.length) loadSubCounts(classes) }, [classes, loadSubCounts])
 
@@ -147,149 +116,14 @@ export default function MentorLiveClassesPage() {
     return { completed: ch.completed, isUnit: false, subjectId: s._id, chapterId: ch._id, unitId: null }
   }
 
-  // A mentor moves between the tracks of the room they're in, so the switcher is
-  // scoped to that room — Track 1 ↔ Track 2, never across to the other room.
-  const loadRoomTracks = useCallback(async (roomKey) => {
-    if (!roomKey) return setRoomTracks([])
-    try {
-      const d = await apiFetch(`/api/live-classes/manage/live-tracks?roomKey=${encodeURIComponent(roomKey)}`)
-      setRoomTracks(d.tracks || [])
-    } catch {
-      setRoomTracks([])
-    }
-  }, [])
-
-  // Track states drift while hosting — the other track's class may start or end.
-  useEffect(() => {
-    if (!session) return
-    const t = setInterval(() => loadRoomTracks(session.roomKey), 20_000)
-    return () => clearInterval(t)
-  }, [session, loadRoomTracks])
-
-  // Server-pushed notifications, relayed through the LiveKit data channel of
-  // whichever room we're connected to. Hand raises can come from ANY track —
-  // including one we're not in — so the badge/toast names the track.
-  const onHandEvent = useCallback((p) => {
-    // Students handing work in reach the host over the same relay — including
-    // from a track the host isn't currently teaching.
-    if (p?.type === 'submission') {
-      setSubCounts((c) => ({
-        ...c,
-        [p.classId]: { total: c[p.classId]?.total ?? p.count, pending: p.count },
-      }))
-      playDing()
-      setToast(`📎 ${p.student?.name || 'A student'} submitted work in ${p.roomLabel} · ${p.trackLabel}`)
-      clearTimeout(toastTimer.current)
-      toastTimer.current = setTimeout(() => setToast(''), 6000)
-      return
-    }
-    if (p?.type !== 'hand') return
-    // The payload's count is authoritative (same store the 20s poll reads).
-    setRoomTracks(ts => ts.map(t =>
-      t.roomKey === p.roomKey && t.trackKey === p.trackKey
-        ? { ...t, handsRaised: p.count }
-        : t,
-    ))
-    if (p.raised) {
-      playDing()
-      setToast(`🖐 ${p.student?.name || 'A student'} raised a hand in ${p.roomLabel} · ${p.trackLabel}`)
-      clearTimeout(toastTimer.current)
-      toastTimer.current = setTimeout(() => setToast(''), 6000)
-    }
-  }, [])
-  useEffect(() => () => clearTimeout(toastTimer.current), [])
-
-  const sessionFrom = (d, fallbackTitle) => {
-    const c = d.liveClass || {}
-    return {
-      classId: c._id,
-      roomKey: c.room?.key || null,
-      trackKey: c.track?.key || null,
-      token: d.token,
-      wsUrl: d.wsUrl,
-      title: c.title || fallbackTitle,
-      subtitle: [c.room?.label, c.track?.label].filter(Boolean).join(' · '),
-    }
-  }
-
-  // One-way mirror: broadcast this host's camera/mic into another track while
-  // staying in the current one. Forwarding dies with the source connection, so
-  // any switch/leave clears the local list too.
-  const toggleMirror = async (track) => {
-    const key = `${track.roomKey}/${track.trackKey}`
-    const label = `${track.roomLabel} · ${track.trackLabel}`
-    setError('')
-    if (mirrors.includes(key)) {
-      try {
-        await apiFetch(`/api/live-classes/manage/track/${track.roomKey}/${track.trackKey}/mirror/stop`, { method: 'POST', body: JSON.stringify({}) })
-        setMirrors(m => m.filter(k => k !== key))
-      } catch (err) {
-        setError(err.message || 'Could not stop the mirror')
-      }
-      return
-    }
-    if (!window.confirm(
-      `Broadcast your camera and mic into ${label}?\n\nThis is one-way: students there will see and hear you live, but you will NOT see or hear them. You stay in your current track.`,
-    )) return
-    try {
-      await apiFetch(`/api/live-classes/manage/track/${track.roomKey}/${track.trackKey}/mirror`, {
-        method: 'POST',
-        body: JSON.stringify({ fromRoomKey: session?.roomKey, fromTrackKey: session?.trackKey }),
-      })
-      setMirrors(m => [...m, key])
-      await loadRoomTracks(session?.roomKey)   // target may have just gone live
-    } catch (err) {
-      setError(err.message || 'Could not start the mirror')
-    }
-  }
-
   const startOrEnter = async (cls) => {
-    // Already connected to this class in the minimized window — just expand it,
-    // rather than fetching a fresh token and forcing a reconnect.
-    if (session?.classId === cls._id) { setMinimized(false); return }
     setBusyId(cls._id); setError('')
     try {
-      // "start" flips it live and returns a host token; if already live it re-issues one.
-      const path = cls.status === 'live'
-        ? `/api/live-classes/manage/${cls._id}/host-token`
-        : `/api/live-classes/manage/${cls._id}/start`
-      const d = await apiFetch(path, { method: cls.status === 'live' ? 'GET' : 'POST' })
-      const s = sessionFrom(d, cls.title)
-      setSession(s)
-      await loadRoomTracks(s.roomKey)
+      await enterSession(cls)
     } catch (err) {
       setError(err.message || 'Could not start the class')
     } finally {
       setBusyId(null)
-    }
-  }
-
-  // Hop to the other track in this room and remount — LiveRoom is keyed on the
-  // token, so the old connection is fully dropped. The server enters the class
-  // already running there, or starts that track's next booking on the way in.
-  const switchTrack = async (track) => {
-    if (switching || !track) return
-    // One mis-click shouldn't pull the host out of a room mid-class — confirm
-    // first, and be explicit that switching also starts a not-yet-live booking.
-    const label = `${track.roomLabel} · ${track.trackLabel}`
-    const msg = track.state === 'scheduled'
-      ? `Switch to ${label}? This will start "${track.title}". Students in your current track stay connected.`
-      : `Switch to ${label}? Students in your current track stay connected.`
-    if (!window.confirm(msg)) return
-    setSwitching(true); setError('')
-    try {
-      const d = await apiFetch(
-        `/api/live-classes/manage/track/${track.roomKey}/${track.trackKey}/open`,
-        { method: 'POST', body: JSON.stringify({}) },
-      )
-      const s = sessionFrom(d, `${track.roomLabel} · ${track.trackLabel}`)
-      setSession(s)
-      setMirrors([])   // forwarding died with the old connection
-      await Promise.all([loadRoomTracks(s.roomKey), load()])
-    } catch (err) {
-      setError(err.message || 'Could not switch track')
-    } finally {
-      setSwitching(false)
     }
   }
 
@@ -330,33 +164,7 @@ export default function MentorLiveClassesPage() {
     }
   }
 
-  // Only act on a disconnect from the room we're actually in. Switching tracks
-  // unmounts the previous LiveKitRoom, and its onDisconnected can land after the
-  // new one is up — that stale event must be ignored, not treated as "left".
-  // Shrink the room to a corner window / expand it back. The list behind may
-  // not have been looked at since the class started, so refresh it on the way
-  // down (statuses and submission badges move while hosting).
-  const toggleMinimize = () => {
-    if (!minimized) load()
-    setMinimized((m) => !m)
-  }
-
-  const leaveFrom = (token) => {
-    if (sessionRef.current?.token !== token) return
-    setSession(null)
-    setMinimized(false)
-    setMirrors([])   // forwarding stops when the source disconnects
-    load()
-  }
-
-  // The room and the list render as SIBLINGS in a stable order, so toggling
-  // minimize only shows/hides the list — LiveRoom keeps its position in the
-  // tree, stays mounted, and the LiveKit connection survives. Minimized, the
-  // room floats in a corner while the mentor uses this page (e.g. to review
-  // submissions mid-class).
   return (
-    <>
-      {(!session || minimized) && (
     <div className="p-4 md:p-8 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-1">Live Classes</h1>
       <p className="text-gray-400 text-sm mb-6">
@@ -487,40 +295,6 @@ export default function MentorLiveClassesPage() {
           onClose={() => setSubmissions(null)}
         />
       )}
-
-      {/* While the room is minimized its in-room toast overlay is hidden, so
-          hand-raise / submission pings surface here instead. */}
-      {session && toast && (
-        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[70] bg-black/80 text-amber-100 text-xs font-semibold px-3 py-1.5 rounded-lg border border-amber-400/50 shadow-lg max-w-[90vw] truncate">
-          {toast}
-        </div>
-      )}
     </div>
-      )}
-
-      {session && (
-        <Suspense fallback={<div style={{ position: 'fixed', inset: 0, background: '#0b0b0f', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>Loading class…</div>}>
-          <LiveRoom
-            token={session.token}
-            wsUrl={session.wsUrl}
-            canHost
-            title={session.title}
-            subtitle={session.subtitle}
-            tracks={roomTracks}
-            activeClassId={session.classId}
-            onSwitchTrack={switchTrack}
-            switching={switching}
-            mirrors={mirrors}
-            onToggleMirror={toggleMirror}
-            notice={error}
-            toast={toast}
-            onHandEvent={onHandEvent}
-            minimized={minimized}
-            onToggleMinimize={toggleMinimize}
-            onLeave={() => leaveFrom(session.token)}
-          />
-        </Suspense>
-      )}
-    </>
   )
 }
