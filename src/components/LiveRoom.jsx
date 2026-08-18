@@ -1,6 +1,11 @@
-import { LiveKitRoom, VideoConference, useDataChannel } from '@livekit/components-react'
+import { useCallback, useRef, useState, lazy, Suspense } from 'react'
+import { LiveKitRoom, VideoConference, useDataChannel, useLocalParticipant } from '@livekit/components-react'
 import '@livekit/components-styles'
 import ErrorBoundary from './ErrorBoundary'
+
+// Only pulled in when a student actually opens the submit panel — it carries the
+// recorder, and the class stage shouldn't pay for it on every join.
+const SubmitWorkPanel = lazy(() => import('./SubmitWorkPanel'))
 
 // Topic of server-pushed data messages (hand raises etc.) — must match the
 // server's NOTIFY_TOPIC in services/livekitService.js.
@@ -21,6 +26,7 @@ const NOTIFY_TOPIC = 'focas-notify'
 //
 // Optional student-only props:
 //   onRaiseHand, handRaised — the 🖐 toggle; the server relays it to the host
+//   submitClass — { id, title } enables the 📎 submit panel inside the room
 export default function LiveRoom(props) {
   return (
     <ErrorBoundary onReset={props.onLeave}>
@@ -32,8 +38,10 @@ export default function LiveRoom(props) {
 function LiveRoomInner({
   token, wsUrl, title, subtitle, onLeave, canHost,
   tracks, activeClassId, onSwitchTrack, switching, mirrors, onToggleMirror, notice,
-  onHandEvent, toast, onRaiseHand, handRaised,
+  onHandEvent, toast, onRaiseHand, handRaised, submitClass,
 }) {
+  const [submitOpen, setSubmitOpen] = useState(false)
+  const [submittedCount, setSubmittedCount] = useState(0)
   // Hosts get an "are you sure" on LiveKit's Leave button — one mis-click would
   // drop the session, and an empty room ends the class shortly after. Caught in
   // the capture phase so we can veto the click before LiveKit disconnects.
@@ -113,29 +121,123 @@ function LiveRoomInner({
           </div>
         )}
 
-        {/* Students: raise/lower a hand. The server relays it to the host even
-            if they're currently teaching in the other track. */}
-        {onRaiseHand && (
-          <button
-            onClick={onRaiseHand}
-            title={handRaised ? 'Lower your hand' : 'Raise your hand — the mentor gets notified'}
-            style={{
-              position: 'absolute', top: 8, right: 8, zIndex: 20,
-              background: handRaised ? '#ca8a04' : 'rgba(0,0,0,0.55)',
-              color: '#fff',
-              border: `1px solid ${handRaised ? '#facc15' : 'rgba(255,255,255,0.18)'}`,
-              fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
-              cursor: 'pointer', whiteSpace: 'nowrap',
-            }}
-          >
-            🖐 {handRaised ? 'Hand raised' : 'Raise hand'}
-          </button>
+        {/* Student controls, stacked top-right so they never overlap each other:
+            raise a hand, and hand work in without leaving the class. */}
+        {(onRaiseHand || submitClass) && (
+          <div style={{
+            position: 'absolute', top: 8, right: 8, zIndex: 20,
+            display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end',
+            maxWidth: '70vw',
+          }}>
+            {submitClass && (
+              <button
+                onClick={() => setSubmitOpen(true)}
+                title="Submit a voice note, video, PDF or photo of your work to your mentor"
+                style={{
+                  background: submittedCount ? '#0d9488' : 'rgba(0,0,0,0.55)',
+                  color: '#fff',
+                  border: `1px solid ${submittedCount ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
+                  fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
+                  cursor: 'pointer', whiteSpace: 'nowrap',
+                }}
+              >
+                📎 {submittedCount ? `Submitted ${submittedCount}` : 'Submit work'}
+              </button>
+            )}
+            {onRaiseHand && (
+              <button
+                onClick={onRaiseHand}
+                title={handRaised ? 'Lower your hand' : 'Raise your hand — the mentor gets notified'}
+                style={{
+                  background: handRaised ? '#ca8a04' : 'rgba(0,0,0,0.55)',
+                  color: '#fff',
+                  border: `1px solid ${handRaised ? '#facc15' : 'rgba(255,255,255,0.18)'}`,
+                  fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
+                  cursor: 'pointer', whiteSpace: 'nowrap',
+                }}
+              >
+                🖐 {handRaised ? 'Hand raised' : 'Raise hand'}
+              </button>
+            )}
+          </div>
+        )}
+
+        {submitClass && submitOpen && (
+          <SubmitOverlay
+            classId={submitClass.id}
+            classTitle={submitClass.title}
+            onClose={() => setSubmitOpen(false)}
+            onCountChange={setSubmittedCount}
+          />
         )}
 
         {onHandEvent && <NotifyListener onEvent={onHandEvent} />}
 
         <VideoConference />
       </LiveKitRoom>
+    </div>
+  )
+}
+
+// The submit panel, mounted over the class stage. Must live inside <LiveKitRoom>
+// because it brokers the camera/mic handoff through useLocalParticipant: a phone
+// gives its camera to one consumer at a time, so LiveKit has to let go before the
+// recorder can take it, and gets it back when the recording ends. Whatever the
+// student had switched on is restored — never switched on for them.
+function SubmitOverlay({ classId, classTitle, onClose, onCountChange }) {
+  const { localParticipant } = useLocalParticipant()
+  // What was on before we borrowed the devices, so restore is faithful.
+  const priorRef = useRef({ camera: false, mic: false })
+
+  const release = useCallback(async ({ camera, mic }) => {
+    if (!localParticipant) return false
+    priorRef.current = {
+      camera: !!localParticipant.isCameraEnabled,
+      mic: !!localParticipant.isMicrophoneEnabled,
+    }
+    const jobs = []
+    if (camera && priorRef.current.camera) jobs.push(localParticipant.setCameraEnabled(false))
+    if (mic && priorRef.current.mic) jobs.push(localParticipant.setMicrophoneEnabled(false))
+    if (!jobs.length) return false
+    // A device that refuses to stop shouldn't block the recording attempt.
+    await Promise.allSettled(jobs)
+    return true
+  }, [localParticipant])
+
+  const restore = useCallback(async () => {
+    if (!localParticipant) return
+    const prior = priorRef.current
+    const jobs = []
+    if (prior.camera) jobs.push(localParticipant.setCameraEnabled(true))
+    if (prior.mic) jobs.push(localParticipant.setMicrophoneEnabled(true))
+    priorRef.current = { camera: false, mic: false }
+    await Promise.allSettled(jobs)
+  }, [localParticipant])
+
+  return (
+    <div
+      style={{
+        position: 'absolute', inset: 0, zIndex: 40,
+        background: 'rgba(0,0,0,0.6)', display: 'flex',
+        alignItems: 'center', justifyContent: 'center', padding: 12,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{ width: '100%', maxWidth: 480, maxHeight: '92dvh', display: 'flex', borderRadius: 16, overflow: 'hidden' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Suspense fallback={<div style={{ background: '#fff', padding: 24, width: '100%', textAlign: 'center', fontSize: 13, color: '#6b7280' }}>Loading…</div>}>
+          <SubmitWorkPanel
+            embedded
+            classId={classId}
+            classTitle={classTitle}
+            onClose={onClose}
+            onCountChange={onCountChange}
+            cameraControls={{ release, restore }}
+          />
+        </Suspense>
+      </div>
     </div>
   )
 }

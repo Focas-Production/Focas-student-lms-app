@@ -4,6 +4,8 @@ import { apiFetch } from '../../api'
 // Lazy-loaded so the ~1.4 MB LiveKit bundle is only fetched when a student
 // actually joins a class, not on every page visit.
 const LiveRoom = lazy(() => import('../../components/LiveRoom'))
+// Same reasoning for the recorder — only loaded when work is actually submitted.
+const SubmitWorkPanel = lazy(() => import('../../components/SubmitWorkPanel'))
 
 function fmtWhen(d) {
   if (!d) return ''
@@ -19,6 +21,7 @@ export default function LiveClassesPage() {
   const [joining, setJoining] = useState(null)    // id being joined
   const [error, setError]     = useState('')
   const [handRaised, setHandRaised] = useState(false)
+  const [submitFor, setSubmitFor] = useState(null)  // { id, title } while the panel is open
 
   const load = useCallback(async () => {
     try {
@@ -84,6 +87,7 @@ export default function LiveClassesPage() {
           subtitle={session.subtitle}
           onRaiseHand={toggleHand}
           handRaised={handRaised}
+          submitClass={{ id: session.classId, title: session.title }}
           onLeave={leave}
         />
       </Suspense>
@@ -110,13 +114,16 @@ export default function LiveClassesPage() {
         <div className="space-y-3">
           {classes.map((c) => {
             const live = c.status === 'live'
+            const ended = c.status === 'ended'
             return (
               <div key={c._id} className="bg-white rounded-2xl shadow-sm p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                      live ? 'bg-red-100 text-red-700' : 'bg-sky-100 text-sky-700'}`}>
-                      {live ? '● LIVE' : 'Upcoming'}
+                      live ? 'bg-red-100 text-red-700'
+                        : ended ? 'bg-gray-100 text-gray-500'
+                        : 'bg-sky-100 text-sky-700'}`}>
+                      {live ? '● LIVE' : ended ? 'Ended' : 'Upcoming'}
                     </span>
                     {c.roomLabel && (
                       <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">
@@ -135,20 +142,40 @@ export default function LiveClassesPage() {
                   <p className="text-xs text-gray-400 mt-1">{fmtWhen(c.scheduledStart)}</p>
                 </div>
 
-                {live ? (
-                  <button onClick={() => join(c)} disabled={joining === c._id}
-                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:bg-gray-200 disabled:text-gray-400 whitespace-nowrap flex-shrink-0">
-                    {joining === c._id ? 'Joining…' : 'Join now'}
-                  </button>
-                ) : (
-                  <span className="w-full sm:w-auto text-center px-4 py-2.5 rounded-xl bg-gray-100 text-gray-400 text-sm font-semibold whitespace-nowrap flex-shrink-0">
-                    Not started
-                  </span>
-                )}
+                <div className="flex gap-2 flex-shrink-0 w-full sm:w-auto">
+                  {/* Hand work in without rejoining — the class stays here for
+                      the whole submission window after it ends. */}
+                  {c.submissionOpen && (
+                    <button onClick={() => setSubmitFor({ id: c._id, title: c.title })}
+                      className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-teal-300 text-teal-700 text-sm font-semibold hover:bg-teal-50 whitespace-nowrap">
+                      📎 Submit work
+                    </button>
+                  )}
+                  {live ? (
+                    <button onClick={() => join(c)} disabled={joining === c._id}
+                      className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:bg-gray-200 disabled:text-gray-400 whitespace-nowrap">
+                      {joining === c._id ? 'Joining…' : 'Join now'}
+                    </button>
+                  ) : !ended ? (
+                    <span className="flex-1 sm:flex-none text-center px-4 py-2.5 rounded-xl bg-gray-100 text-gray-400 text-sm font-semibold whitespace-nowrap">
+                      Not started
+                    </span>
+                  ) : null}
+                </div>
               </div>
             )
           })}
         </div>
+      )}
+
+      {submitFor && (
+        <Suspense fallback={null}>
+          <SubmitWorkPanel
+            classId={submitFor.id}
+            classTitle={submitFor.title}
+            onClose={() => { setSubmitFor(null); load() }}
+          />
+        </Suspense>
       )}
     </div>
   )

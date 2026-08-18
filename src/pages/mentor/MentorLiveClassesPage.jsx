@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { apiFetch } from '../../api'
 import AttendanceModal from '../../components/AttendanceModal'
+import SubmissionsModal from '../../components/SubmissionsModal'
 
 // Lazy-loaded so the LiveKit bundle only loads when the mentor actually hosts.
 const LiveRoom = lazy(() => import('../../components/LiveRoom'))
@@ -42,7 +43,9 @@ export default function MentorLiveClassesPage() {
   const [mirrors, setMirrors]       = useState([]) // "roomKey/trackKey" tracks receiving our mirror
   const [syllabus, setSyllabus]     = useState(null) // subjects with chapter/unit completion
   const [attendance, setAttendance] = useState(null)
-  const [toast, setToast]           = useState('')   // transient in-room chip (hand raises)
+  const [submissions, setSubmissions] = useState(null) // { id, title } while the modal is open
+  const [subCounts, setSubCounts]   = useState({})   // classId → { total, pending }
+  const [toast, setToast]           = useState('')   // transient in-room chip (hand raises, submissions)
   const toastTimer = useRef(null)
   const audioCtxRef = useRef(null)
 
@@ -92,6 +95,20 @@ export default function MentorLiveClassesPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Submission badges for every visible class in one request, rather than one
+  // per card. Failing silently is right here — a missing badge is a cosmetic
+  // loss, and an error banner over the class list would be misleading.
+  const loadSubCounts = useCallback(async (list) => {
+    const ids = (list || []).map((c) => c._id)
+    if (!ids.length) return
+    try {
+      const d = await apiFetch(`/api/live-classes/manage/submission-counts?ids=${ids.join(',')}`)
+      setSubCounts(d.counts || {})
+    } catch { /* badge-only data */ }
+  }, [])
+
+  useEffect(() => { if (classes?.length) loadSubCounts(classes) }, [classes, loadSubCounts])
 
   const loadSyllabus = useCallback(() => {
     return apiFetch('/api/live-classes/manage/syllabus')
@@ -152,6 +169,19 @@ export default function MentorLiveClassesPage() {
   // whichever room we're connected to. Hand raises can come from ANY track —
   // including one we're not in — so the badge/toast names the track.
   const onHandEvent = useCallback((p) => {
+    // Students handing work in reach the host over the same relay — including
+    // from a track the host isn't currently teaching.
+    if (p?.type === 'submission') {
+      setSubCounts((c) => ({
+        ...c,
+        [p.classId]: { total: c[p.classId]?.total ?? p.count, pending: p.count },
+      }))
+      playDing()
+      setToast(`📎 ${p.student?.name || 'A student'} submitted work in ${p.roomLabel} · ${p.trackLabel}`)
+      clearTimeout(toastTimer.current)
+      toastTimer.current = setTimeout(() => setToast(''), 6000)
+      return
+    }
     if (p?.type !== 'hand') return
     // The payload's count is authoritative (same store the 20s poll reads).
     setRoomTracks(ts => ts.map(t =>
@@ -422,6 +452,22 @@ export default function MentorLiveClassesPage() {
                     Attendance
                   </button>
                 )}
+                {(c.status === 'live' || c.status === 'ended') && (
+                  <button onClick={() => setSubmissions({ id: c._id, title: c.title })}
+                    title="Student work handed in for this class"
+                    className={`px-3 py-2 rounded-xl border text-sm font-semibold whitespace-nowrap ${
+                      subCounts[c._id]?.pending
+                        ? 'border-amber-300 text-amber-700 hover:bg-amber-50'
+                        : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                    Submissions
+                    {subCounts[c._id]?.total > 0 && (
+                      <span className={`ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                        subCounts[c._id].pending ? 'bg-amber-500 text-white' : 'bg-gray-200 text-gray-600'}`}>
+                        {subCounts[c._id].pending || subCounts[c._id].total}
+                      </span>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -432,6 +478,18 @@ export default function MentorLiveClassesPage() {
       {attendance && (
         <AttendanceModal title={attendance.title} roster={attendance.roster} classInfo={attendance.class}
           meta={attendance.meta} onToggleRecord={updateAttendanceRecord} onClose={() => setAttendance(null)} />
+      )}
+
+      {/* Student work handed in for this class */}
+      {submissions && (
+        <SubmissionsModal
+          classId={submissions.id}
+          title={submissions.title}
+          apiFetch={apiFetch}
+          accent="teal"
+          onCountsChange={(counts) => setSubCounts((c) => ({ ...c, [submissions.id]: counts }))}
+          onClose={() => setSubmissions(null)}
+        />
       )}
     </div>
   )

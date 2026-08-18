@@ -21,6 +21,7 @@ import MyStudentsPage from '../pages/mentor/MyStudentsPage'
 import MentorProfilePage from '../pages/mentor/MentorProfilePage'
 import MentorTestSeriesPage from '../pages/mentor/MentorTestSeriesPage'
 import MentorLiveClassesPage from '../pages/mentor/MentorLiveClassesPage'
+import MentorSubmissionsPage from '../pages/mentor/MentorSubmissionsPage'
 import MentorSyllabusPage from '../pages/mentor/MentorSyllabusPage'
 import TrackRoomPage from '../pages/TrackRoomPage'
 
@@ -66,6 +67,7 @@ export default function AppRouter() {
       }>
         <Route index           element={<MentorDashboard />} />
         <Route path="live-classes" element={<MentorLiveClassesPage />} />
+        <Route path="submissions" element={<MentorSubmissionsPage />} />
         <Route path="syllabus" element={<MentorSyllabusPage />} />
         <Route path="test-series" element={<MentorTestSeriesPage />} />
         <Route path="students" element={<MyStudentsPage />} />
