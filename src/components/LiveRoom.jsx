@@ -23,6 +23,11 @@ const NOTIFY_TOPIC = 'focas-notify'
 //   onSwitchTrack(classId), switching
 //   onHandEvent   — server-pushed notifications (a hand raised in any track)
 //   toast         — transient info chip (e.g. "X raised a hand in Track 2")
+//   minimized / onToggleMinimize — picture-in-picture mode: the room shrinks to
+//     a corner window (connection kept alive) so the page behind becomes usable,
+//     e.g. for reviewing submissions mid-class. The parent owns the state and
+//     MUST keep this component mounted across the toggle — unmounting would
+//     tear down the LiveKit connection.
 //
 // Optional student-only props:
 //   onRaiseHand, handRaised — the 🖐 toggle; the server relays it to the host
@@ -39,6 +44,7 @@ function LiveRoomInner({
   token, wsUrl, title, subtitle, onLeave, canHost,
   tracks, activeClassId, onSwitchTrack, switching, mirrors, onToggleMirror, notice,
   onHandEvent, toast, onRaiseHand, handRaised, submitClass,
+  minimized, onToggleMinimize,
 }) {
   const [submitOpen, setSubmitOpen] = useState(false)
   const [submittedCount, setSubmittedCount] = useState(0)
@@ -54,8 +60,25 @@ function LiveRoomInner({
     }
   }
 
+  // Minimized: a floating corner window above everything (including modals), so
+  // the class stays watchable while the mentor works the page behind it. The
+  // SAME element tree renders in both modes — only styles change — so LiveKit
+  // never reconnects on toggle.
+  const shellStyle = minimized
+    ? {
+        position: 'fixed', right: 16, bottom: 16, zIndex: 60,
+        width: 'min(320px, calc(100vw - 24px))', height: 200,
+        background: '#0b0b0f', borderRadius: 14, overflow: 'hidden',
+        border: '1px solid rgba(255,255,255,0.18)',
+        boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
+      }
+    : { position: 'fixed', inset: 0, zIndex: 50, background: '#0b0b0f' }
+
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: '#0b0b0f' }} onClickCapture={guardLeave}>
+    <div className={minimized ? 'focas-pip' : undefined} style={shellStyle} onClickCapture={guardLeave}>
+      {/* No room for LiveKit's control bar (or an open chat) in the tiny window —
+          expand to use them. Mic/camera keep whatever state they had. */}
+      {minimized && <style>{'.focas-pip .lk-control-bar{display:none}.focas-pip .lk-chat{display:none}'}</style>}
       <LiveKitRoom
         // Keyed on the token so switching tracks tears the old connection down and
         // reconnects cleanly — LiveKitRoom won't re-handshake a live room in place.
@@ -68,20 +91,65 @@ function LiveRoomInner({
         audio={false}
         onDisconnected={onLeave}
         data-lk-theme="default"
-        style={{ height: '100dvh' }}
+        style={{ height: minimized ? '100%' : '100dvh' }}
       >
-        {title && (
+        {/* Compact header while minimized: title + expand. Everything else
+            (switcher, toasts, notices) lives on the page behind the window. */}
+        {minimized && (
           <div style={{
-            position: 'absolute', top: 8, left: 8, zIndex: 20,
-            background: 'rgba(0,0,0,0.55)', color: '#fff', fontSize: 12, fontWeight: 600,
-            padding: '4px 10px', borderRadius: 8, pointerEvents: 'none',
-            maxWidth: '55vw', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            position: 'absolute', top: 0, left: 0, right: 0, zIndex: 30,
+            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
+            background: 'linear-gradient(rgba(0,0,0,0.72), rgba(0,0,0,0))',
           }}>
-            🔴 {title}{subtitle ? ` · ${subtitle}` : ''}
+            <span style={{
+              flex: 1, color: '#fff', fontSize: 11, fontWeight: 600,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              🔴 {title}{subtitle ? ` · ${subtitle}` : ''}
+            </span>
+            <button
+              onClick={onToggleMinimize}
+              title="Back to full screen"
+              style={{
+                background: 'rgba(0,0,0,0.55)', color: '#fff',
+                border: '1px solid rgba(255,255,255,0.25)',
+                fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+                cursor: 'pointer', flexShrink: 0,
+              }}
+            >⤢</button>
           </div>
         )}
 
-        {onSwitchTrack && (
+        {!minimized && (title || onToggleMinimize) && (
+          <div style={{
+            position: 'absolute', top: 8, left: 8, zIndex: 20,
+            display: 'flex', alignItems: 'center', gap: 6, maxWidth: '55vw',
+          }}>
+            {title && (
+              <div style={{
+                background: 'rgba(0,0,0,0.55)', color: '#fff', fontSize: 12, fontWeight: 600,
+                padding: '4px 10px', borderRadius: 8, pointerEvents: 'none',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                🔴 {title}{subtitle ? ` · ${subtitle}` : ''}
+              </div>
+            )}
+            {onToggleMinimize && (
+              <button
+                onClick={onToggleMinimize}
+                title="Minimize — the class keeps running in a small window while you use the page behind it (e.g. review submissions)"
+                style={{
+                  background: 'rgba(0,0,0,0.55)', color: '#fff',
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 8,
+                  cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+                }}
+              >⧉ Minimize</button>
+            )}
+          </div>
+        )}
+
+        {!minimized && onSwitchTrack && (
           <TrackSwitcher
             tracks={tracks || []}
             activeClassId={activeClassId}
@@ -93,8 +161,9 @@ function LiveRoomInner({
         )}
 
         {/* Errors and toasts have to surface in here — the page behind the room
-            is not visible while in a class. Stacked so both can show at once. */}
-        {(notice || toast) && (
+            is not visible while in a class. Stacked so both can show at once.
+            (While minimized the page IS visible and shows them itself.) */}
+        {!minimized && (notice || toast) && (
           <div style={{
             position: 'absolute', top: 44, right: 8, zIndex: 21,
             display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4,
@@ -123,7 +192,7 @@ function LiveRoomInner({
 
         {/* Student controls, stacked top-right so they never overlap each other:
             raise a hand, and hand work in without leaving the class. */}
-        {(onRaiseHand || submitClass) && (
+        {!minimized && (onRaiseHand || submitClass) && (
           <div style={{
             position: 'absolute', top: 8, right: 8, zIndex: 20,
             display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end',

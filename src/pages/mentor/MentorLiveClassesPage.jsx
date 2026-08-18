@@ -38,6 +38,7 @@ export default function MentorLiveClassesPage() {
   const [busyId, setBusyId]     = useState(null)
   const [error, setError]       = useState('')
   const [session, setSession]   = useState(null)   // { classId, roomKey, token, wsUrl, title, subtitle }
+  const [minimized, setMinimized] = useState(false) // room shrunk to a corner window; page usable behind it
   const [roomTracks, setRoomTracks] = useState([]) // switcher: tracks of the current room only
   const [switching, setSwitching]   = useState(false)
   const [mirrors, setMirrors]       = useState([]) // "roomKey/trackKey" tracks receiving our mirror
@@ -243,6 +244,9 @@ export default function MentorLiveClassesPage() {
   }
 
   const startOrEnter = async (cls) => {
+    // Already connected to this class in the minimized window — just expand it,
+    // rather than fetching a fresh token and forcing a reconnect.
+    if (session?.classId === cls._id) { setMinimized(false); return }
     setBusyId(cls._id); setError('')
     try {
       // "start" flips it live and returns a host token; if already live it re-issues one.
@@ -329,38 +333,30 @@ export default function MentorLiveClassesPage() {
   // Only act on a disconnect from the room we're actually in. Switching tracks
   // unmounts the previous LiveKitRoom, and its onDisconnected can land after the
   // new one is up — that stale event must be ignored, not treated as "left".
+  // Shrink the room to a corner window / expand it back. The list behind may
+  // not have been looked at since the class started, so refresh it on the way
+  // down (statuses and submission badges move while hosting).
+  const toggleMinimize = () => {
+    if (!minimized) load()
+    setMinimized((m) => !m)
+  }
+
   const leaveFrom = (token) => {
     if (sessionRef.current?.token !== token) return
     setSession(null)
+    setMinimized(false)
     setMirrors([])   // forwarding stops when the source disconnects
     load()
   }
 
-  if (session) {
-    return (
-      <Suspense fallback={<div style={{ position: 'fixed', inset: 0, background: '#0b0b0f', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>Loading class…</div>}>
-        <LiveRoom
-          token={session.token}
-          wsUrl={session.wsUrl}
-          canHost
-          title={session.title}
-          subtitle={session.subtitle}
-          tracks={roomTracks}
-          activeClassId={session.classId}
-          onSwitchTrack={switchTrack}
-          switching={switching}
-          mirrors={mirrors}
-          onToggleMirror={toggleMirror}
-          notice={error}
-          toast={toast}
-          onHandEvent={onHandEvent}
-          onLeave={() => leaveFrom(session.token)}
-        />
-      </Suspense>
-    )
-  }
-
+  // The room and the list render as SIBLINGS in a stable order, so toggling
+  // minimize only shows/hides the list — LiveRoom keeps its position in the
+  // tree, stays mounted, and the LiveKit connection survives. Minimized, the
+  // room floats in a corner while the mentor uses this page (e.g. to review
+  // submissions mid-class).
   return (
+    <>
+      {(!session || minimized) && (
     <div className="p-4 md:p-8 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-1">Live Classes</h1>
       <p className="text-gray-400 text-sm mb-6">
@@ -437,7 +433,7 @@ export default function MentorLiveClassesPage() {
                 {(c.status === 'scheduled' || c.status === 'live') && (
                   <button onClick={() => startOrEnter(c)} disabled={busyId === c._id}
                     className="px-4 py-2 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:bg-gray-300 whitespace-nowrap">
-                    {busyId === c._id ? '…' : c.status === 'live' ? 'Enter' : 'Start'}
+                    {busyId === c._id ? '…' : session?.classId === c._id ? 'Return' : c.status === 'live' ? 'Enter' : 'Start'}
                   </button>
                 )}
                 {c.status === 'live' && (
@@ -491,6 +487,40 @@ export default function MentorLiveClassesPage() {
           onClose={() => setSubmissions(null)}
         />
       )}
+
+      {/* While the room is minimized its in-room toast overlay is hidden, so
+          hand-raise / submission pings surface here instead. */}
+      {session && toast && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[70] bg-black/80 text-amber-100 text-xs font-semibold px-3 py-1.5 rounded-lg border border-amber-400/50 shadow-lg max-w-[90vw] truncate">
+          {toast}
+        </div>
+      )}
     </div>
+      )}
+
+      {session && (
+        <Suspense fallback={<div style={{ position: 'fixed', inset: 0, background: '#0b0b0f', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>Loading class…</div>}>
+          <LiveRoom
+            token={session.token}
+            wsUrl={session.wsUrl}
+            canHost
+            title={session.title}
+            subtitle={session.subtitle}
+            tracks={roomTracks}
+            activeClassId={session.classId}
+            onSwitchTrack={switchTrack}
+            switching={switching}
+            mirrors={mirrors}
+            onToggleMirror={toggleMirror}
+            notice={error}
+            toast={toast}
+            onHandEvent={onHandEvent}
+            minimized={minimized}
+            onToggleMinimize={toggleMinimize}
+            onLeave={() => leaveFrom(session.token)}
+          />
+        </Suspense>
+      )}
+    </>
   )
 }
