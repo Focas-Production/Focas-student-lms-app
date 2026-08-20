@@ -108,6 +108,7 @@ export default function TrackRoomPage() {
           token={session.token}
           wsUrl={session.wsUrl}
           canHost={isHost}
+          classId={session.classId}
           title={session.title}
           subtitle={session.subtitle}
           onRaiseHand={!isHost && session.classId ? toggleHand : undefined}

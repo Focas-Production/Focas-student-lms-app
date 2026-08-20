@@ -148,8 +148,12 @@ export default function SubmitWorkPanel({
   const submitted = data?.submission
   const attached = submitted?.files?.length || 0
   const slotsLeft = Math.max(0, MAX_FILES - attached - queue.length)
+  // "Reviewed" shows the marks but is NOT a lock: while the class window is open
+  // the student may keep handing work in (it goes back to the mentor's queue).
+  // Only removing already-graded files is blocked until then — the server
+  // enforces the same rule.
   const locked = submitted?.status === 'reviewed'
-  const canSubmit = !!data?.canSubmit && !locked
+  const canSubmit = !!data?.canSubmit
 
   const addFiles = (fileList) => {
     setError(''); setOkMsg('')
@@ -295,13 +299,18 @@ export default function SubmitWorkPanel({
           <>
             {locked && (
               <div className="mb-3 rounded-xl bg-emerald-50 border border-emerald-200 p-3">
-                <p className="text-xs font-bold text-emerald-800">Reviewed — this submission is closed</p>
+                <p className="text-xs font-bold text-emerald-800">Reviewed by your mentor</p>
                 {submitted.marks != null && (
                   <p className="text-sm font-bold text-emerald-900 mt-1">
                     {submitted.marks}{submitted.totalMarks != null ? ` / ${submitted.totalMarks}` : ''} marks
                   </p>
                 )}
                 {submitted.mentorNotes && <p className="text-xs text-emerald-800 mt-1 whitespace-pre-wrap">{submitted.mentorNotes}</p>}
+                {canSubmit && (
+                  <p className="text-[11px] text-emerald-700 mt-1.5">
+                    You can still submit more work — new files go back to your mentor for review.
+                  </p>
+                )}
               </div>
             )}
 
@@ -351,7 +360,7 @@ export default function SubmitWorkPanel({
                       <span className="text-[10px] text-gray-400 flex-shrink-0">
                         {f.durationMs ? fmtClock(f.durationMs) : fmtBytes(f.size)}
                       </span>
-                      {canSubmit && (
+                      {canSubmit && !locked && (
                         <button onClick={() => removeSubmitted(f.key)} disabled={busy}
                           title="Remove this file"
                           className="text-gray-300 hover:text-red-500 text-lg leading-none disabled:opacity-40">×</button>

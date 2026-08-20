@@ -1,7 +1,8 @@
-import { useCallback, useRef, useState, lazy, Suspense } from 'react'
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { LiveKitRoom, VideoConference, useDataChannel, useLocalParticipant } from '@livekit/components-react'
 import '@livekit/components-styles'
 import ErrorBoundary from './ErrorBoundary'
+import { apiFetch } from '../api'
 
 // Only pulled in when a student actually opens the submit panel — it carries the
 // recorder, and the class stage shouldn't pay for it on every join.
@@ -32,6 +33,10 @@ const NOTIFY_TOPIC = 'focas-notify'
 // Optional student-only props:
 //   onRaiseHand, handRaised — the 🖐 toggle; the server relays it to the host
 //   submitClass — { id, title } enables the 📎 submit panel inside the room
+//
+// classId (optional, both roles) enables the ⏱ room countdown: the host sets a
+// deadline, everyone in THIS room/track sees it tick, and a chime + "Time's up"
+// fires for all of them when it ends.
 export default function LiveRoom(props) {
   return (
     <ErrorBoundary onReset={props.onLeave}>
@@ -43,9 +48,12 @@ export default function LiveRoom(props) {
 function LiveRoomInner({
   token, wsUrl, title, subtitle, onLeave, canHost,
   tracks, activeClassId, onSwitchTrack, switching, mirrors, onToggleMirror, notice,
-  onHandEvent, toast, onRaiseHand, handRaised, submitClass,
+  onHandEvent, toast, onRaiseHand, handRaised, submitClass, classId,
   minimized, onToggleMinimize,
 }) {
+  // Which class this room is showing — hosts already pass activeClassId and
+  // students submitClass, so the timer works even where classId isn't wired.
+  const timerClassId = classId || activeClassId || submitClass?.id || null
   const [submitOpen, setSubmitOpen] = useState(false)
   const [submittedCount, setSubmittedCount] = useState(0)
   // Hosts get an "are you sure" on LiveKit's Leave button — one mis-click would
@@ -162,10 +170,11 @@ function LiveRoomInner({
 
         {/* Errors and toasts have to surface in here — the page behind the room
             is not visible while in a class. Stacked so both can show at once.
-            (While minimized the page IS visible and shows them itself.) */}
+            (While minimized the page IS visible and shows them itself.)
+            Below the timer chip's row (44) so a toast never covers the countdown. */}
         {!minimized && (notice || toast) && (
           <div style={{
-            position: 'absolute', top: 44, right: 8, zIndex: 21,
+            position: 'absolute', top: 84, right: 8, zIndex: 21,
             display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4,
             maxWidth: '52vw',
           }}>
@@ -242,6 +251,12 @@ function LiveRoomInner({
 
         {onHandEvent && <NotifyListener onEvent={onHandEvent} />}
 
+        {/* Mounted even while minimized so the countdown keeps ticking and the
+            chime still fires — only its visuals hide in the tiny window. */}
+        {timerClassId && (
+          <ClassTimer classId={timerClassId} canHost={!!canHost} minimized={!!minimized} />
+        )}
+
         <VideoConference />
       </LiveKitRoom>
     </div>
@@ -308,6 +323,266 @@ function SubmitOverlay({ classId, classTitle, onClose, onCountChange }) {
         </Suspense>
       </div>
     </div>
+  )
+}
+
+// ───────────────────── class timer (Meet-style countdown) ─────────────────────
+
+const fmtCountdown = (ms) => {
+  const s = Math.max(0, Math.ceil(ms / 1000))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = String(s % 60).padStart(2, '0')
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`
+}
+
+// Three rising beeps via WebAudio — no audio asset to load or block on, and the
+// student clicked to join the room, so autoplay policy lets it through.
+function playTimesUpChime() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext
+    if (!Ctx) return
+    const ctx = new Ctx()
+    const t0 = ctx.currentTime
+    ;[[880, 0], [880, 0.3], [1318.5, 0.6]].forEach(([freq, at]) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = freq
+      gain.gain.setValueAtTime(0.0001, t0 + at)
+      gain.gain.exponentialRampToValueAtTime(0.35, t0 + at + 0.03)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.28)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(t0 + at)
+      osc.stop(t0 + at + 0.3)
+    })
+    setTimeout(() => { ctx.close().catch(() => {}) }, 1500)
+  } catch {
+    // Sound is a nicety — never break the room over it.
+  }
+}
+
+// The room countdown. The host sets a deadline; the server stores it on the
+// class and pushes start/cancel to THIS room only (one class = one room/track),
+// so parallel tracks never hear it. Every client ticks locally against the
+// deadline and fires the chime + "Time's up" itself — including this component
+// while the host has the window minimized, which is why the parent keeps it
+// mounted and only the visuals hide.
+//
+// The server always sends RELATIVE remaining time (endsInMs), converted to a
+// local deadline on receipt — a device clock that's minutes off must not shift
+// the countdown.
+function ClassTimer({ classId, canHost, minimized }) {
+  const [endsAt, setEndsAt]     = useState(null)   // local epoch ms, null = no timer
+  const [remaining, setRemaining] = useState(0)
+  const [timesUp, setTimesUp]   = useState(false)
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [minutes, setMinutes]   = useState('5')
+  const [seconds, setSeconds]   = useState('0')
+  const [busy, setBusy]         = useState(false)
+  const [error, setError]       = useState('')
+  const firedRef   = useRef(false)
+  const timesUpRef = useRef(null)
+
+  // Sync on join — a student (or a host switching back into this track) who
+  // arrives mid-countdown starts ticking immediately.
+  useEffect(() => {
+    let alive = true
+    const base = canHost ? `/api/live-classes/manage/${classId}` : `/api/live-classes/${classId}`
+    apiFetch(`${base}/timer`)
+      .then((d) => {
+        if (!alive || !d?.timer) return
+        firedRef.current = false
+        setEndsAt(Date.now() + d.timer.endsInMs)
+      })
+      .catch(() => {})   // no timer state is a fine state
+    return () => {
+      alive = false
+      clearTimeout(timesUpRef.current)
+    }
+  }, [classId, canHost])
+
+  useDataChannel(NOTIFY_TOPIC, (msg) => {
+    let p
+    try { p = JSON.parse(new TextDecoder().decode(msg.payload)) } catch { return }
+    if (p?.type !== 'timer' || (p.classId && p.classId !== String(classId))) return
+    clearTimeout(timesUpRef.current)
+    firedRef.current = false
+    setTimesUp(false)
+    setEndsAt(p.action === 'start' ? Date.now() + p.endsInMs : null)
+  })
+
+  // The tick. 250ms keeps the display honest without meaningful cost; at zero
+  // it fires the chime exactly once and shows the overlay for a few seconds.
+  useEffect(() => {
+    if (!endsAt) return undefined
+    const tick = () => {
+      const left = endsAt - Date.now()
+      if (left > 0) { setRemaining(left); return }
+      setRemaining(0)
+      if (!firedRef.current) {
+        firedRef.current = true
+        setEndsAt(null)
+        setTimesUp(true)
+        playTimesUpChime()
+        timesUpRef.current = setTimeout(() => setTimesUp(false), 8000)
+      }
+    }
+    tick()
+    const t = setInterval(tick, 250)
+    return () => clearInterval(t)
+  }, [endsAt])
+
+  const start = async () => {
+    const total = (parseInt(minutes, 10) || 0) * 60 + (parseInt(seconds, 10) || 0)
+    if (total < 5) { setError('Set at least 5 seconds'); return }
+    setBusy(true); setError('')
+    try {
+      const d = await apiFetch(`/api/live-classes/manage/${classId}/timer`, {
+        method: 'POST', body: JSON.stringify({ seconds: total }),
+      })
+      firedRef.current = false
+      setTimesUp(false)
+      setEndsAt(Date.now() + d.timer.endsInMs)
+      setPanelOpen(false)
+    } catch (e) {
+      setError(e.message || 'Could not start the timer')
+    } finally { setBusy(false) }
+  }
+
+  const cancelTimer = async () => {
+    setEndsAt(null)   // stop locally right away; the push confirms for everyone
+    try {
+      await apiFetch(`/api/live-classes/manage/${classId}/timer`, { method: 'DELETE' })
+    } catch { /* worst case the push never goes out and clients run to zero */ }
+  }
+
+  if (minimized) return null   // keep hooks ticking; no room for chrome in the pip
+
+  const active = !!endsAt
+  const urgent = active && remaining <= 10_000
+
+  const chipStyle = {
+    display: 'flex', alignItems: 'center', gap: 6,
+    background: urgent ? 'rgba(153,27,27,0.92)' : 'rgba(0,0,0,0.62)',
+    color: '#fff',
+    border: `1px solid ${urgent ? '#f87171' : 'rgba(255,255,255,0.22)'}`,
+    fontSize: 13, fontWeight: 700, padding: '5px 12px', borderRadius: 999,
+    whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+  }
+
+  return (
+    <>
+      {/* Right side, second row — directly under the track switcher (hosts) or
+          the submit/hand buttons (students), clear of both. */}
+      {(active || canHost) && (
+        <div style={{
+          position: 'absolute', top: 44, right: 8,
+          zIndex: 22, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6,
+        }}>
+          {active ? (
+            <div style={chipStyle} className={urgent ? 'animate-pulse' : undefined}>
+              <span>⏱ {fmtCountdown(remaining)}</span>
+              {canHost && (
+                <button
+                  onClick={cancelTimer}
+                  title="Cancel the timer"
+                  style={{
+                    background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
+                    fontSize: 15, lineHeight: 1, cursor: 'pointer', padding: '0 0 0 2px',
+                  }}
+                >×</button>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => { setPanelOpen((v) => !v); setError('') }}
+              title="Set a countdown everyone in this room can see — a chime sounds when it ends"
+              style={{
+                background: panelOpen ? '#0d9488' : 'rgba(0,0,0,0.55)', color: '#fff',
+                border: `1px solid ${panelOpen ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
+                fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
+                cursor: 'pointer', whiteSpace: 'nowrap',
+              }}
+            >⏱ Timer</button>
+          )}
+
+          {panelOpen && !active && canHost && (
+            <div style={{
+              background: 'rgba(17,17,22,0.95)', border: '1px solid rgba(255,255,255,0.18)',
+              borderRadius: 12, padding: 12, width: 220,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+            }}>
+              <p style={{ color: '#9ca3af', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', margin: '0 0 8px' }}>
+                Timer for this room
+              </p>
+              <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
+                {[1, 2, 5, 10].map((m) => (
+                  <button key={m}
+                    onClick={() => { setMinutes(String(m)); setSeconds('0'); setError('') }}
+                    style={{
+                      flex: 1,
+                      background: minutes === String(m) && seconds === '0' ? '#0d9488' : 'rgba(255,255,255,0.08)',
+                      color: '#fff', border: 'none', borderRadius: 7,
+                      fontSize: 11, fontWeight: 700, padding: '6px 0', cursor: 'pointer',
+                    }}
+                  >{m}m</button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                <input
+                  type="number" min="0" max="180" value={minutes} disabled={busy}
+                  onChange={(e) => setMinutes(e.target.value)}
+                  style={{
+                    width: '100%', background: 'rgba(255,255,255,0.08)', color: '#fff',
+                    border: '1px solid rgba(255,255,255,0.15)', borderRadius: 7,
+                    fontSize: 13, padding: '6px 8px', outline: 'none',
+                  }}
+                />
+                <span style={{ color: '#9ca3af', fontSize: 11 }}>min</span>
+                <input
+                  type="number" min="0" max="59" value={seconds} disabled={busy}
+                  onChange={(e) => setSeconds(e.target.value)}
+                  style={{
+                    width: '100%', background: 'rgba(255,255,255,0.08)', color: '#fff',
+                    border: '1px solid rgba(255,255,255,0.15)', borderRadius: 7,
+                    fontSize: 13, padding: '6px 8px', outline: 'none',
+                  }}
+                />
+                <span style={{ color: '#9ca3af', fontSize: 11 }}>sec</span>
+              </div>
+              <button onClick={start} disabled={busy}
+                style={{
+                  width: '100%', background: busy ? '#374151' : '#0d9488', color: '#fff',
+                  border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 700,
+                  padding: '8px 0', cursor: busy ? 'default' : 'pointer',
+                }}
+              >{busy ? 'Starting…' : '▶ Start timer'}</button>
+              {error && <p style={{ color: '#f87171', fontSize: 11, margin: '8px 0 0' }}>{error}</p>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Everyone in the room gets this the moment their countdown hits zero.
+          Above the submit overlay (40) so it's seen mid-upload too; click
+          anywhere to dismiss early. */}
+      {timesUp && (
+        <div
+          onClick={() => { clearTimeout(timesUpRef.current); setTimesUp(false) }}
+          style={{
+            position: 'absolute', inset: 0, zIndex: 45,
+            background: 'rgba(0,0,0,0.55)', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 10, cursor: 'pointer',
+          }}
+        >
+          <div style={{ fontSize: 64, lineHeight: 1 }}>⏰</div>
+          <div style={{ color: '#fff', fontSize: 28, fontWeight: 800 }}>Time's up!</div>
+          <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12 }}>tap to dismiss</div>
+        </div>
+      )}
+    </>
   )
 }
 
