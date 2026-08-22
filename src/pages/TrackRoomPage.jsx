@@ -78,11 +78,13 @@ export default function TrackRoomPage() {
     }
   }
 
-  // Ignore a disconnect from a room we've already left behind.
-  const leaveFrom = (token) => {
+  // Ignore a disconnect from a room we've already left behind. info.removed:
+  // the host removed this student — say so rather than silently dropping them.
+  const leaveFrom = (token, info) => {
     if (sessionRef.current?.token !== token) return
     setSession(null)
     setHandRaised(false)
+    setError(info?.removed ? 'The host removed you from this class.' : '')
     loadStatus()
   }
 
@@ -113,7 +115,7 @@ export default function TrackRoomPage() {
           subtitle={session.subtitle}
           onRaiseHand={!isHost && session.classId ? toggleHand : undefined}
           handRaised={handRaised}
-          onLeave={() => leaveFrom(session.token)}
+          onLeave={(info) => leaveFrom(session.token, info)}
         />
       </Suspense>
     )

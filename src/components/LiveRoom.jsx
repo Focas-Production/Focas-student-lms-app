@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
-import { LiveKitRoom, useDataChannel, useLocalParticipant } from '@livekit/components-react'
+import { LiveKitRoom, useDataChannel, useLocalParticipant, useRemoteParticipants } from '@livekit/components-react'
+import { DisconnectReason, ParticipantKind } from 'livekit-client'
 import '@livekit/components-styles'
 import ErrorBoundary from './ErrorBoundary'
 import ClassStage from './ClassStage'
 import PipStage from './PipStage'
+import HostParticipantsPanel from './HostParticipantsPanel'
+import StudentMediaGuard from './StudentMediaGuard'
 import { usePictureInPicture, pickStageVideo } from '../hooks/usePictureInPicture'
 import { fmtCountdown } from '../utils/countdown'
 import { apiFetch } from '../api'
@@ -73,6 +76,14 @@ const NOTIFY_TOPIC = 'focas-notify'
 // classId (optional, both roles) enables the ⏱ room countdown: the host sets a
 // deadline, everyone in THIS room/track sees it tick, and a chime + "Time's up"
 // fires for all of them when it ends.
+//
+// The same class id (or activeClassId for hosts) also switches on the
+// Zoom-style media controls: hosts get a 👥 Participants drawer (mute / stop
+// video / ask to unmute / lock / remove — see HostParticipantsPanel), and
+// students get the matching prompts and explanations (StudentMediaGuard).
+//
+// onLeave(info?) — `info.removed` is true when the host removed this
+// participant, so the page can say so instead of silently dropping them.
 export default function LiveRoom(props) {
   return (
     <ErrorBoundary onReset={props.onLeave}>
@@ -92,6 +103,8 @@ function LiveRoomInner({
   const timerClassId = classId || activeClassId || submitClass?.id || null
   const [submitOpen, setSubmitOpen] = useState(false)
   const [submittedCount, setSubmittedCount] = useState(0)
+  // Host's participants drawer (mute / lock / remove students).
+  const [participantsOpen, setParticipantsOpen] = useState(false)
 
   // Pop-out (picture-in-picture). The shell ref is only for the video-mode
   // fallback, which floats the biggest <video> currently on stage.
@@ -248,7 +261,8 @@ function LiveRoomInner({
         // Everyone joins muted; they turn their own camera/mic on from the control bar.
         video={false}
         audio={false}
-        onDisconnected={onLeave}
+        // A host removing this participant is the one disconnect worth naming.
+        onDisconnected={(reason) => onLeave?.(reason === DisconnectReason.PARTICIPANT_REMOVED ? { removed: true } : undefined)}
         data-lk-theme="default"
         style={{ height: minimized ? '100%' : '100dvh' }}
       >
@@ -319,6 +333,9 @@ function LiveRoomInner({
               >⧉ Minimize</button>
             )}
             {pipButton}
+            {canHost && timerClassId && (
+              <ParticipantsButton open={participantsOpen} onClick={() => setParticipantsOpen((v) => !v)} />
+            )}
           </div>
         )}
 
@@ -455,6 +472,14 @@ function LiveRoomInner({
         )}
 
         {onHandEvent && <NotifyListener onEvent={onHandEvent} />}
+
+        {/* Zoom-style media controls: the host's drawer, or the student's
+            prompts/explanations. Both need room context, hence in here. */}
+        {!canHost && <StudentMediaGuard classId={timerClassId} />}
+        {canHost && timerClassId && participantsOpen && !minimized && (
+          <HostParticipantsPanel classId={timerClassId} onClose={() => setParticipantsOpen(false)} />
+        )}
+
         {canHost && (
           <LocalMediaProbe
             onChange={setCapturing}
@@ -878,6 +903,27 @@ function LocalMediaProbe({ onChange, onMicControl, onPlaying, keepAlive }) {
       tabIndex={-1}
       style={{ position: 'fixed', left: 0, bottom: 0, width: 2, height: 2, opacity: 0, pointerEvents: 'none' }}
     />
+  )
+}
+
+// 👥 toggle for the host's participants drawer, with a live student count.
+// Inside <LiveKitRoom> so it can read the room.
+function ParticipantsButton({ open, onClick }) {
+  const { localParticipant } = useLocalParticipant()
+  const remote = useRemoteParticipants()
+  const count = remote.filter((p) => p.kind === ParticipantKind.STANDARD && p.identity !== localParticipant?.identity).length
+  return (
+    <button
+      onClick={onClick}
+      title={open ? 'Close the participants panel' : 'Participants — mute, stop video, ask to unmute, lock or remove students'}
+      aria-pressed={open}
+      style={{
+        background: open ? '#0d9488' : 'rgba(0,0,0,0.55)', color: '#fff',
+        border: `1px solid ${open ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
+        fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 8,
+        cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+      }}
+    >👥 {count}</button>
   )
 }
 

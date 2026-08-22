@@ -60,7 +60,12 @@ export default function LiveClassesPage() {
     }
   }
 
-  const leave = () => { setSession(null); setHandRaised(false); load() }
+  // info.removed: the host removed this student — say so, don't just vanish.
+  const leave = (info) => {
+    setSession(null); setHandRaised(false)
+    setError(info?.removed ? 'The host removed you from this class.' : '')
+    load()
+  }
 
   // 🖐 toggle — the server notifies the host, even when they're currently
   // teaching in the other track of the room.
