@@ -26,9 +26,17 @@ function meetingMs(classInfo) {
   return end - new Date(classInfo.startedAt).getTime()
 }
 
-function exportCsv(title, roster, classInfo) {
+function exportCsv(title, roster, classInfo, items) {
   const lines = []
   const runMs = meetingMs(classInfo)
+  // One completion column per item the class taught (booked chapter/unit plus
+  // any extras the host marked as also finished).
+  const itemCols = items?.length ? items.map((it) => `${it.label} completed`) : ['Chapter Completed']
+  const itemCells = (p) => items?.length
+    ? items.map((it, i) => (p.record.items?.[i]?.completed ?? (i === 0 && p.record.chapterCompleted)) ? 'Yes' : 'No')
+    : [p.record.chapterCompleted ? 'Yes' : 'No']
+  const anyManual = (p) => p.record.presentSource === 'manual' || p.record.chapterSource === 'manual'
+    || (p.record.items || []).some((x) => x?.source === 'manual')
 
   // Class header
   lines.push(csvRow(['Class', title || '']))
@@ -45,7 +53,7 @@ function exportCsv(title, roster, classInfo) {
   lines.push(csvRow(['SUMMARY']))
   lines.push(csvRow([
     'Name', 'Role', 'Times Joined', 'First Join', 'Last Leave', 'Total Time (min)', 'Total Time', 'Currently In Class',
-    ...(hasRecords ? ['Attended %', 'Present', 'Chapter Completed', 'Marked'] : []),
+    ...(hasRecords ? ['Attended %', 'Present', ...itemCols, 'Marked'] : []),
   ]))
   for (const p of roster) {
     lines.push(csvRow([
@@ -60,9 +68,9 @@ function exportCsv(title, roster, classInfo) {
       ...(hasRecords ? (p.record ? [
         `${p.record.percent}%`,
         p.record.present ? 'Present' : 'Absent',
-        p.record.chapterCompleted ? 'Yes' : 'No',
-        p.record.presentSource === 'manual' || p.record.chapterSource === 'manual' ? `edited by ${p.record.markedByName || 'mentor'}` : 'auto',
-      ] : ['', '', '', '']) : []),
+        ...itemCells(p),
+        anyManual(p) ? `edited by ${p.record.markedByName || 'mentor'}` : 'auto',
+      ] : Array(3 + itemCols.length).fill('')) : []),
     ]))
   }
   lines.push('')
@@ -123,19 +131,49 @@ export default function AttendanceModal({ title, roster, classInfo, meta, onTogg
 
   const hasRecords = !!roster?.some((p) => p.record)
   const chapterLabel = meta?.unitName || meta?.chapterName || ''
-  // Per-student chapter completion only appears once the mentor has marked the
-  // chapter/unit done in syllabus progress — before that there's nothing to edit.
-  const showChapter = hasRecords && !!chapterLabel && !!meta?.itemCompleted
-  const cols = 5 + (hasRecords ? 2 : 0) + (showChapter ? 1 : 0)
+  // Everything the class taught — the booked chapter/unit plus extras the host
+  // marked as also finished. Older servers only send the flat single-chapter
+  // meta fields; fold those into the same list shape.
+  const metaItems = meta?.items?.length ? meta.items
+    : chapterLabel ? [{
+        chapterId: null, unitId: null,
+        chapterName: meta?.chapterName || '', unitName: meta?.unitName || '',
+        label: chapterLabel, itemCompleted: !!meta?.itemCompleted,
+      }]
+    : []
+  // Every taught item gets a column (hiding the scheduled chapter while extras
+  // showed was just confusing). Cells stay locked until the mentor marks the
+  // item done in syllabus progress — before that there's nothing to edit. `i`
+  // keeps each item's index in the full list, which record.items aligns with.
+  const shownItems = hasRecords ? metaItems.map((it, i) => ({ ...it, i })) : []
+  const cols = 5 + (hasRecords ? 2 : 0) + shownItems.length
 
-  const toggle = async (p, field) => {
+  // A student's verdict for one taught item (falls back to the flat fields a
+  // pre-items server/record used for the booked item).
+  const itemState = (p, it) => p.record?.items?.[it.i]
+    || (it.i === 0
+      ? { completed: !!p.record?.chapterCompleted, source: p.record?.chapterSource || 'auto' }
+      : { completed: false, source: 'auto' })
+
+  const togglePresent = async (p) => {
     if (!onToggleRecord || !p.userId || saving) return
-    const key = `${p.userId}:${field}`
+    const key = `${p.userId}:present`
     setSaving(key)
     try {
-      await onToggleRecord(p.userId, field === 'present'
-        ? { present: !p.record.present }
-        : { chapterCompleted: !p.record.chapterCompleted })
+      await onToggleRecord(p.userId, { present: !p.record.present })
+    } finally { setSaving(null) }
+  }
+
+  const toggleItem = async (p, it) => {
+    if (!onToggleRecord || !p.userId || saving || !it.itemCompleted) return
+    const key = `${p.userId}:item${it.i}`
+    setSaving(key)
+    try {
+      await onToggleRecord(p.userId, {
+        chapterCompleted: !itemState(p, it).completed,
+        // Old servers know only the booked item and take no ids.
+        ...(it.chapterId ? { chapterId: it.chapterId, unitId: it.unitId || undefined } : {}),
+      })
     } finally { setSaving(null) }
   }
 
@@ -155,7 +193,7 @@ export default function AttendanceModal({ title, roster, classInfo, meta, onTogg
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className={`bg-white rounded-2xl shadow-xl w-full ${hasRecords ? 'max-w-3xl' : 'max-w-2xl'} max-h-[85vh] flex flex-col`} onClick={e => e.stopPropagation()}>
+      <div className={`bg-white rounded-2xl shadow-xl w-full ${shownItems.length > 1 ? 'max-w-4xl' : hasRecords ? 'max-w-3xl' : 'max-w-2xl'} max-h-[85vh] flex flex-col`} onClick={e => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="text-sm font-bold text-gray-900">Attendance</p>
@@ -166,7 +204,7 @@ export default function AttendanceModal({ title, roster, classInfo, meta, onTogg
           </div>
           <div className="flex items-center gap-2">
             {roster?.length > 0 && (
-              <button onClick={() => exportCsv(title, roster, classInfo)}
+              <button onClick={() => exportCsv(title, roster, classInfo, metaItems)}
                 className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">
                 Export CSV
               </button>
@@ -193,7 +231,12 @@ export default function AttendanceModal({ title, roster, classInfo, meta, onTogg
                     <th className="text-right pb-2 font-semibold">Total</th>
                     {hasRecords && <th className="text-center pb-2 font-semibold">%</th>}
                     {hasRecords && <th className="text-center pb-2 font-semibold">Present</th>}
-                    {showChapter && <th className="text-center pb-2 font-semibold" title={chapterLabel}>Chapter</th>}
+                    {shownItems.map((it) => (
+                      <th key={it.i} className="text-center pb-2 font-semibold max-w-[110px] truncate normal-case"
+                        title={it.unitName ? `${it.chapterName} · ${it.unitName}` : it.chapterName}>
+                        {it.label}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -221,7 +264,7 @@ export default function AttendanceModal({ title, roster, classInfo, meta, onTogg
                             <td className="py-2.5 text-center">
                               {p.record ? (
                                 <button
-                                  onClick={(e) => { e.stopPropagation(); toggle(p, 'present') }}
+                                  onClick={(e) => { e.stopPropagation(); togglePresent(p) }}
                                   disabled={!onToggleRecord || saving === `${p.userId}:present`}
                                   title={`${p.record.presentSource === 'manual' ? `Edited by ${p.record.markedByName || 'mentor'}` : 'Auto-marked'}${onToggleRecord ? ' · click to change' : ''}`}
                                   className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase transition disabled:opacity-50 ${
@@ -233,22 +276,30 @@ export default function AttendanceModal({ title, roster, classInfo, meta, onTogg
                               ) : <span className="text-gray-300">—</span>}
                             </td>
                           )}
-                          {showChapter && (
-                            <td className="py-2.5 text-center">
-                              {p.record ? (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); toggle(p, 'chapter') }}
-                                  disabled={!onToggleRecord || saving === `${p.userId}:chapter`}
-                                  title={`${chapterLabel} · ${p.record.chapterSource === 'manual' ? `edited by ${p.record.markedByName || 'mentor'}` : 'auto: completes when the chapter is marked done in syllabus progress AND attendance across its sessions meets the threshold'}${onToggleRecord ? ' · click to change' : ''}`}
-                                  className={`text-[10px] font-bold px-2 py-1 rounded-md transition disabled:opacity-50 ${
-                                    p.record.chapterCompleted ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                                  } ${onToggleRecord ? 'cursor-pointer' : 'cursor-default'}`}>
-                                  {p.record.chapterCompleted ? '✓ Done' : 'Not done'}
-                                  {p.record.chapterSource === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
-                                </button>
-                              ) : <span className="text-gray-300">—</span>}
-                            </td>
-                          )}
+                          {shownItems.map((it) => {
+                            const st = p.record ? itemState(p, it) : null
+                            const editable = !!onToggleRecord && it.itemCompleted
+                            return (
+                              <td key={it.i} className="py-2.5 text-center">
+                                {st ? (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); toggleItem(p, it) }}
+                                    disabled={!editable || saving === `${p.userId}:item${it.i}`}
+                                    title={!it.itemCompleted
+                                      ? `"${it.label}" isn't marked completed in syllabus progress yet — use the class card's mark-done or ＋ More button first, then students who attended complete it automatically`
+                                      : `${it.label} · ${st.source === 'manual' ? `edited by ${p.record.markedByName || 'mentor'}` : 'auto: completes when the item is marked done in syllabus progress AND attendance across its sessions meets the threshold'}${editable ? ' · click to change' : ''}`}
+                                    className={`text-[10px] font-bold px-2 py-1 rounded-md transition ${
+                                      !it.itemCompleted ? 'bg-gray-50 text-gray-300'
+                                      : st.completed ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-50'
+                                      : 'bg-gray-100 text-gray-500 hover:bg-gray-200 disabled:opacity-50'
+                                    } ${editable ? 'cursor-pointer' : 'cursor-default'}`}>
+                                    {st.completed ? '✓ Done' : 'Not done'}
+                                    {st.source === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
+                                  </button>
+                                ) : <span className="text-gray-300">—</span>}
+                              </td>
+                            )
+                          })}
                         </tr>
                         {open && (
                           <tr>

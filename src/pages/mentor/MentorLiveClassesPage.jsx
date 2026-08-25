@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Fragment } from 'react'
 import { apiFetch } from '../../api'
 import AttendanceModal from '../../components/AttendanceModal'
 import SubmissionsModal from '../../components/SubmissionsModal'
@@ -28,6 +28,81 @@ const STATUS_STYLE = {
   cancelled: 'bg-amber-100 text-amber-700',
 }
 
+// Checklist of everything one ended session finished: the booked chapter/unit
+// plus anything else the host got through — a quick class can close out its
+// chapter and start the next. Ticking an extra item marks it completed in
+// syllabus progress AND ties this class's attendance to it, so students who
+// were present get it completed automatically. The booked item just toggles
+// its syllabus flag — the class teaches it by definition.
+function CoveredModal({ cls, subject, busyKey, error, onToggle, onClose }) {
+  const primaryChapterId = String(cls.chapter?.chapterId || '')
+  const primaryUnitId = String(cls.unit?.unitId || '')
+  const isPrimary = (chId, uId) => String(chId) === primaryChapterId && String(uId || '') === primaryUnitId
+  const isExtra = (chId, uId) => (cls.extraItems || []).some((x) =>
+    String(x.chapter?.chapterId) === String(chId) && String(x.unit?.unitId || '') === String(uId || ''))
+
+  const row = (ch, u) => {
+    const chId = ch._id, uId = u?._id
+    const doc = u || ch
+    const primary = isPrimary(chId, uId)
+    const coveredHere = primary ? !!doc.completed : isExtra(chId, uId)
+    const key = `${chId}:${uId || ''}`
+    return (
+      <label key={key}
+        className={`flex items-center gap-2.5 py-1.5 px-2 rounded-lg cursor-pointer hover:bg-gray-50 ${u ? 'ml-6' : ''}`}>
+        <input type="checkbox" checked={coveredHere} disabled={!!busyKey}
+          onChange={() => onToggle(chId, uId || null, primary, !coveredHere)}
+          className="w-4 h-4 accent-teal-600 flex-shrink-0" />
+        <span className={`text-sm min-w-0 truncate ${u ? 'text-gray-600' : 'font-semibold text-gray-800'}`}>{doc.name}</span>
+        {primary && (
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-500 uppercase flex-shrink-0">scheduled</span>
+        )}
+        {!coveredHere && doc.completed && (
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-teal-50 text-teal-600 flex-shrink-0"
+            title="Already marked completed (in another session)">✓ done</span>
+        )}
+        {busyKey === key && <span className="text-xs text-gray-400 flex-shrink-0">…</span>}
+      </label>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-gray-900">What did this class finish?</p>
+            <p className="text-xs text-gray-400 truncate">{cls.subject?.name || cls.title}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
+        </div>
+        <div className="p-4 overflow-y-auto">
+          {error && <p className="text-xs text-red-500 mb-2">{error}</p>}
+          {!subject ? (
+            <p className="text-sm text-gray-400 text-center py-4">Couldn't load this subject's syllabus — try reloading.</p>
+          ) : !(subject.chapters || []).length ? (
+            <p className="text-sm text-gray-400 text-center py-4">This subject has no chapters yet.</p>
+          ) : (
+            <div className="space-y-0.5">
+              {subject.chapters.map((ch) => (
+                <Fragment key={ch._id}>
+                  {row(ch)}
+                  {(ch.units || []).map((u) => row(ch, u))}
+                </Fragment>
+              ))}
+            </div>
+          )}
+          <p className="text-[11px] text-gray-400 mt-3 leading-relaxed">
+            Tick every chapter or unit this session completed. Ticked items are marked done in
+            syllabus progress, and each student who attended enough of the class gets them
+            completed automatically. Unticking undoes both.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Mentors host what the admin books for them — they don't schedule. This page is
 // their assignment list plus the controls to run a class.
 //
@@ -42,6 +117,8 @@ export default function MentorLiveClassesPage() {
   const [syllabus, setSyllabus]     = useState(null) // subjects with chapter/unit completion
   const [attendance, setAttendance] = useState(null)
   const [submissions, setSubmissions] = useState(null) // { id, title } while the modal is open
+  const [covered, setCovered]       = useState(null)   // classId while the "what did this class finish" modal is open
+  const [coveredBusy, setCoveredBusy] = useState(null) // `${chapterId}:${unitId}` while a tick is in flight
 
   const { session, minimized, startOrEnter: enterSession, subCounts, setSubCounts } = useLiveSession()
 
@@ -102,6 +179,33 @@ export default function MentorLiveClassesPage() {
     }
   }
 
+  // Tick/untick one item in the "what did this class finish" checklist. The
+  // booked item only toggles its syllabus flag (same endpoint as the quick-mark
+  // button); an extra item goes through /covered, which also ties this class's
+  // attendance to it so students complete it automatically.
+  const toggleCovered = async (cls, chapterId, unitId, isPrimary, next) => {
+    setError('')
+    setCoveredBusy(`${chapterId}:${unitId || ''}`)
+    try {
+      if (isPrimary) {
+        await apiFetch(`/api/live-classes/manage/syllabus/${cls.subject.subjectId}/progress`, {
+          method: 'POST',
+          body: JSON.stringify({ chapterId, unitId: unitId || undefined, completed: next }),
+        })
+      } else {
+        await apiFetch(`/api/live-classes/manage/${cls._id}/covered`, {
+          method: 'POST',
+          body: JSON.stringify({ chapterId, unitId: unitId || undefined, covered: next }),
+        })
+      }
+      await Promise.all([load(), loadSyllabus()])
+    } catch (err) {
+      setError(err.message || 'Could not update')
+    } finally {
+      setCoveredBusy(null)
+    }
+  }
+
   // Completion state of the chapter/unit a class taught — for the quick-mark
   // button on ended class cards.
   const classProgress = (c) => {
@@ -145,20 +249,44 @@ export default function MentorLiveClassesPage() {
     }
   }
 
-  // Override a student's auto verdict (present / chapter completed) and patch the
-  // open modal's roster in place with what the server settled on.
+  // Override a student's auto verdicts (present / per-item completion) and
+  // patch the open modal's roster in place with what the server settled on.
+  // patch may carry chapterId/unitId to target one of the class's taught items
+  // (default: the booked one); the server hands back every record for the
+  // student since a Present change can flip other items' completion too.
   const updateAttendanceRecord = async (userId, patch) => {
     try {
       const d = await apiFetch(`/api/live-classes/manage/${attendance.id}/attendance/${userId}`, {
         method: 'PATCH', body: JSON.stringify(patch),
       })
       const rec = d.record
-      setAttendance((a) => a && ({
-        ...a,
-        roster: a.roster.map((p) => String(p.userId) === String(userId)
-          ? { ...p, record: { ...p.record, present: rec.present, presentSource: rec.presentSource, chapterCompleted: rec.chapterCompleted, chapterSource: rec.chapterSource, markedByName: rec.markedBy?.name || '' } }
-          : p),
-      }))
+      const recs = d.records || [rec]
+      setAttendance((a) => {
+        if (!a) return a
+        const metaItems = a.meta?.items || []
+        const forItem = (it) => recs.find((r) =>
+          String(r.chapter?.chapterId || '') === String(it?.chapterId || '')
+          && String(r.unit?.unitId || '') === String(it?.unitId || ''))
+        const primary = forItem(metaItems[0]) || rec
+        return {
+          ...a,
+          roster: a.roster.map((p) => String(p.userId) === String(userId)
+            ? {
+                ...p,
+                record: {
+                  ...p.record,
+                  present: rec.present, presentSource: rec.presentSource,
+                  chapterCompleted: primary.chapterCompleted, chapterSource: primary.chapterSource,
+                  items: metaItems.map((it) => {
+                    const r = forItem(it)
+                    return r ? { completed: r.chapterCompleted, source: r.chapterSource } : { completed: false, source: 'auto' }
+                  }),
+                  markedByName: rec.markedBy?.name || p.record?.markedByName || '',
+                },
+              }
+            : p),
+        }
+      })
     } catch (err) {
       setError(err.message || 'Could not update attendance')
     }
@@ -210,6 +338,12 @@ export default function MentorLiveClassesPage() {
                     📖 {c.subject?.name ? `${c.subject.name} · ` : ''}{c.chapter.name}{c.unit?.name ? ` · ${c.unit.name}` : ''}
                   </p>
                 )}
+                {c.extraItems?.length > 0 && (
+                  <p className="text-xs text-teal-600 truncate mt-0.5"
+                    title={c.extraItems.map((x) => x.unit?.name ? `${x.chapter?.name} · ${x.unit.name}` : x.chapter?.name).join(', ')}>
+                    ✓ also finished: {c.extraItems.map((x) => x.unit?.name || x.chapter?.name).filter(Boolean).join(', ')}
+                  </p>
+                )}
                 <p className="text-xs text-gray-400 mt-1">
                   {fmtWhen(c.scheduledStart)}
                   {runDuration(c) && <span className="text-gray-500"> · ran {runDuration(c)}</span>}
@@ -238,6 +372,14 @@ export default function MentorLiveClassesPage() {
                     </button>
                   )
                 })()}
+                {/* …and anything else the session got through beyond its booking */}
+                {c.status === 'ended' && c.subject?.subjectId && (
+                  <button onClick={() => setCovered(c._id)}
+                    title="Finished more than scheduled? Mark extra chapters or units this session completed"
+                    className="px-3 py-2 rounded-xl border border-teal-300 text-teal-700 text-sm font-semibold hover:bg-teal-50 whitespace-nowrap">
+                    ＋ More
+                  </button>
+                )}
                 {(c.status === 'scheduled' || c.status === 'live') && (
                   <button onClick={() => startOrEnter(c)} disabled={busyId === c._id}
                     className="px-4 py-2 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:bg-gray-300 whitespace-nowrap">
@@ -277,6 +419,18 @@ export default function MentorLiveClassesPage() {
           ))}
         </div>
       )}
+
+      {/* Everything an ended session finished — booked item plus extras */}
+      {covered && (() => {
+        const cls = classes?.find((c) => c._id === covered)
+        if (!cls) return null
+        const subject = syllabus?.find((s) => String(s._id) === String(cls.subject?.subjectId))
+        return (
+          <CoveredModal cls={cls} subject={subject} busyKey={coveredBusy} error={error}
+            onToggle={(chapterId, unitId, isPrimary, next) => toggleCovered(cls, chapterId, unitId, isPrimary, next)}
+            onClose={() => setCovered(null)} />
+        )
+      })()}
 
       {/* Attendance modal */}
       {attendance && (
