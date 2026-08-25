@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { LiveKitRoom, useDataChannel, useLocalParticipant, useRemoteParticipants } from '@livekit/components-react'
-import { DisconnectReason, ParticipantKind } from 'livekit-client'
+import { DisconnectReason, ParticipantKind, VideoPresets } from 'livekit-client'
 import '@livekit/components-styles'
 import ErrorBoundary from './ErrorBoundary'
 import ClassStage from './ClassStage'
@@ -101,6 +101,24 @@ function LiveRoomInner({
   // Which class this room is showing — hosts already pass activeClassId and
   // students submitClass, so the timer works even where classId isn't wired.
   const timerClassId = classId || activeClassId || submitClass?.id || null
+  // Video quality is asymmetric on purpose: the host fills everyone's stage, so
+  // they capture and publish high-res; students only ever render as small tiles,
+  // so they're capped at 360p — that cap is what keeps the server inside its
+  // monthly bandwidth allowance. adaptiveStream + dynacast make each viewer pull
+  // only the simulcast layer their tile size actually needs.
+  const roomOptions = useMemo(() => ({
+    adaptiveStream: true,
+    dynacast: true,
+    videoCaptureDefaults: {
+      resolution: canHost ? VideoPresets.h1080.resolution : VideoPresets.h360.resolution,
+    },
+    publishDefaults: {
+      simulcast: true,
+      videoEncoding: canHost
+        ? { maxBitrate: 2_500_000, maxFramerate: 30 }
+        : VideoPresets.h360.encoding,
+    },
+  }), [canHost])
   const [submitOpen, setSubmitOpen] = useState(false)
   const [submittedCount, setSubmittedCount] = useState(0)
   // Host's participants drawer (mute / lock / remove students).
@@ -257,6 +275,7 @@ function LiveRoomInner({
         key={token}
         token={token}
         serverUrl={wsUrl}
+        options={roomOptions}
         connect
         // Everyone joins muted; they turn their own camera/mic on from the control bar.
         video={false}
