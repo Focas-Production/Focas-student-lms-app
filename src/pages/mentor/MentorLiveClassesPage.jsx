@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, Fragment } from 'react'
 import { apiFetch } from '../../api'
 import AttendanceModal from '../../components/AttendanceModal'
 import SubmissionsModal from '../../components/SubmissionsModal'
+import ScheduleCalendar from '../../components/ScheduleCalendar'
 import { useLiveSession } from '../../components/LiveSessionProvider'
 
 function fmtWhen(d) {
@@ -119,13 +120,19 @@ export default function MentorLiveClassesPage() {
   const [submissions, setSubmissions] = useState(null) // { id, title } while the modal is open
   const [covered, setCovered]       = useState(null)   // classId while the "what did this class finish" modal is open
   const [coveredBusy, setCoveredBusy] = useState(null) // `${chapterId}:${unitId}` while a tick is in flight
+  const [tab, setTab]               = useState('list') // 'list' | 'calendar'
+  const [page, setPage]             = useState(1)
+  const [pageInfo, setPageInfo]     = useState(null)   // { total, pages } from the server
 
   const { session, minimized, startOrEnter: enterSession, subCounts, setSubCounts } = useLiveSession()
 
   const load = useCallback(async () => {
     try {
-      const d = await apiFetch('/api/live-classes/manage')
+      // Paginated + attention-first order: live → upcoming (soonest first) →
+      // past (most recent first). The server sorts; this page just renders.
+      const d = await apiFetch(`/api/live-classes/manage?page=${page}&limit=10`)
       setClasses(d.classes || [])
+      setPageInfo({ total: d.total || 0, pages: d.pages || 1 })
       setLoadError('')
     } catch (err) {
       // Never swallow this — an auth or network failure looked identical to
@@ -133,7 +140,13 @@ export default function MentorLiveClassesPage() {
       setClasses([])
       setLoadError(err.message || 'Could not load your classes')
     }
-  }, [])
+  }, [page])
+
+  // A delete/cancel can empty the last page under us — step back, don't strand
+  // the mentor on a blank page.
+  useEffect(() => {
+    if (classes && !classes.length && !loadError && page > 1) setPage((p) => p - 1)
+  }, [classes, loadError, page])
 
   // Reload whenever the hosted session changes (started / switched track / left)
   // — this also covers first mount, and keeps the list current behind the room.
@@ -294,14 +307,28 @@ export default function MentorLiveClassesPage() {
 
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900 mb-1">Live Classes</h1>
-      <p className="text-gray-400 text-sm mb-6">
-        Classes your admin has assigned to you. Start one to go live with your students.
-      </p>
+      <div className="flex items-end justify-between gap-3 flex-wrap mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-1">Live Classes</h1>
+          <p className="text-gray-400 text-sm">
+            Classes your admin has assigned to you. Start one to go live with your students.
+          </p>
+        </div>
+        <div className="flex rounded-xl border border-gray-200 overflow-hidden text-xs font-semibold bg-white">
+          {[['list', 'List'], ['calendar', 'Calendar']].map(([key, label]) => (
+            <button key={key} onClick={() => setTab(key)}
+              className={`px-4 h-9 ${tab === key ? 'bg-teal-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
 
-      {classes === null ? (
+      {tab === 'calendar' ? (
+        <ScheduleCalendar endpoint="/api/live-classes/manage/schedule" />
+      ) : classes === null ? (
         <div className="bg-white rounded-2xl p-8 text-center text-gray-400 text-sm">Loading…</div>
       ) : loadError ? (
         <div className="bg-white rounded-2xl p-8 text-center">
@@ -318,7 +345,7 @@ export default function MentorLiveClassesPage() {
           <p className="text-gray-400 text-sm">When an admin schedules a class with you as host, it'll show up here.</p>
         </div>
       ) : (
-        <div className="space-y-3">
+        <><div className="space-y-3">
           {classes.map((c) => (
             <div key={c._id} className="bg-white rounded-2xl shadow-sm p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
               <div className="min-w-0 flex-1">
@@ -418,6 +445,22 @@ export default function MentorLiveClassesPage() {
             </div>
           ))}
         </div>
+
+        {pageInfo?.pages > 1 && (
+          <div className="flex items-center justify-center gap-3 mt-6">
+            <button onClick={() => setPage((p) => p - 1)} disabled={page <= 1}
+              className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 text-xs font-semibold hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-white">
+              ‹ Prev
+            </button>
+            <span className="text-xs text-gray-500 font-semibold">
+              Page {page} of {pageInfo.pages} · {pageInfo.total} classes
+            </span>
+            <button onClick={() => setPage((p) => p + 1)} disabled={page >= pageInfo.pages}
+              className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 text-xs font-semibold hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-white">
+              Next ›
+            </button>
+          </div>
+        )}</>
       )}
 
       {/* Everything an ended session finished — booked item plus extras */}

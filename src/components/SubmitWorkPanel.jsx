@@ -119,7 +119,7 @@ function putToR2(uploadUrl, file, onProgress, signal) {
 export default function SubmitWorkPanel({
   classId, classTitle, embedded = false, onClose, onCountChange, cameraControls,
 }) {
-  const [data, setData]       = useState(null)   // { submission, canSubmit, closedReason }
+  const [data, setData]       = useState(null)   // { submission, canSubmit, closedReason, work }
   const [queue, setQueue]     = useState([])     // staged files not yet uploaded
   const [note, setNote]       = useState('')
   const [busy, setBusy]       = useState(false)
@@ -127,6 +127,15 @@ export default function SubmitWorkPanel({
   const [error, setError]     = useState('')
   const [okMsg, setOkMsg]     = useState('')
   const [tab, setTab]         = useState('files') // files | voice | video
+  // Which subject/chapter this round of work is for. Defaults to what the class
+  // was booked to teach, but the student can switch to any paper in their
+  // curriculum, and must re-confirm on EVERY submit — the checkbox resets after
+  // each round so a later upload for a different chapter never inherits a stale
+  // confirmation.
+  const [subjectId, setSubjectId] = useState('')
+  const [chapterId, setChapterId] = useState('')
+  const [unitId, setUnitId]       = useState('')
+  const [confirmed, setConfirmed] = useState(false)
   const fileInputRef = useRef(null)
   const abortRef = useRef(null)
 
@@ -135,6 +144,10 @@ export default function SubmitWorkPanel({
       const d = await apiFetch(`/api/live-classes/${classId}/submissions/mine`)
       setData(d)
       setNote(d.submission?.note || '')
+      setSubjectId(d.work?.defaultSubjectId || '')
+      setChapterId(d.work?.defaultChapterId || '')
+      setUnitId(d.work?.defaultUnitId || '')
+      setConfirmed(false)
       onCountChange?.(d.submission?.files?.length || 0)
     } catch (e) {
       setError(e.message || 'Could not load your submission')
@@ -154,6 +167,15 @@ export default function SubmitWorkPanel({
   // enforces the same rule.
   const locked = submitted?.status === 'reviewed'
   const canSubmit = !!data?.canSubmit
+
+  // null when no subject is available to tag against — then there's nothing to
+  // confirm and the panel behaves as before.
+  const work = data?.work || null
+  const pickedSubject = work?.subjects?.find((s) => s.subjectId === subjectId) || null
+  const pickedChapter = pickedSubject?.chapters?.find((c) => c.chapterId === chapterId) || null
+  const pickedUnit = pickedChapter?.units?.find((u) => u.unitId === unitId) || null
+  const needsConfirm = !!(queue.length && work)
+  const confirmMissing = needsConfirm && (!subjectId || !chapterId || !confirmed)
 
   const addFiles = (fileList) => {
     setError(''); setOkMsg('')
@@ -204,6 +226,10 @@ export default function SubmitWorkPanel({
       setError('Record something or choose a file first')
       return
     }
+    if (queue.length && work && (!subjectId || !chapterId || !confirmed)) {
+      setError('Please confirm which subject and chapter this work is for')
+      return
+    }
     setBusy(true); setError(''); setOkMsg('')
     const ctrl = new AbortController()
     abortRef.current = ctrl
@@ -231,6 +257,7 @@ export default function SubmitWorkPanel({
           method: 'POST',
           body: JSON.stringify({
             note,
+            ...(work ? { work: { subjectId, chapterId, unitId: unitId || null } } : {}),
             files: uploads.map((u, i) => ({
               key: u.key, name: u.name, contentType: u.contentType, size: u.size,
               durationMs: queue[i].durationMs, recorded: queue[i].recorded,
@@ -283,7 +310,10 @@ export default function SubmitWorkPanel({
     : 'bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col'
 
   const body = (
-    <div className={shell} onClick={(e) => e.stopPropagation()}>
+    // colorScheme light: the panel is a white card, so its native form controls
+    // (selects, textarea, checkbox) must not follow an OS dark theme — that
+    // renders their text white-on-white.
+    <div className={shell} style={{ colorScheme: 'light' }} onClick={(e) => e.stopPropagation()}>
       <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between gap-3 flex-shrink-0">
         <div className="min-w-0">
           <p className="text-sm font-bold text-gray-900">Submit your work</p>
@@ -433,11 +463,65 @@ export default function SubmitWorkPanel({
                   </div>
                 )}
 
+                {/* Which subject/chapter is this work for — asked on every
+                    submit so the mentor can always tell what a file belongs to.
+                    Explicit text/bg colours on the controls: without them an OS
+                    dark theme renders native form text white-on-white. */}
+                {needsConfirm && (
+                  <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/50 p-3">
+                    <p className="text-[11px] font-bold text-indigo-400 uppercase mb-1.5">This work is for</p>
+
+                    <select value={subjectId} disabled={busy}
+                      onChange={(e) => { setSubjectId(e.target.value); setChapterId(''); setUnitId(''); setConfirmed(false) }}
+                      className="w-full text-xs text-gray-900 border border-gray-200 rounded-xl px-2.5 py-2 bg-white focus:outline-none focus:border-indigo-400">
+                      <option value="">Choose a subject…</option>
+                      {work.subjects.map((s) => (
+                        <option key={s.subjectId} value={s.subjectId}>{s.name}</option>
+                      ))}
+                    </select>
+
+                    {pickedSubject && (
+                      <div className="flex flex-col sm:flex-row gap-2 mt-2">
+                        <select value={chapterId} disabled={busy}
+                          onChange={(e) => { setChapterId(e.target.value); setUnitId(''); setConfirmed(false) }}
+                          className="flex-1 min-w-0 text-xs text-gray-900 border border-gray-200 rounded-xl px-2.5 py-2 bg-white focus:outline-none focus:border-indigo-400">
+                          <option value="">Choose a chapter…</option>
+                          {pickedSubject.chapters.map((c) => (
+                            <option key={c.chapterId} value={c.chapterId}>{c.name}</option>
+                          ))}
+                        </select>
+                        {!!pickedChapter?.units?.length && (
+                          <select value={unitId} disabled={busy}
+                            onChange={(e) => { setUnitId(e.target.value); setConfirmed(false) }}
+                            className="flex-1 min-w-0 text-xs text-gray-900 border border-gray-200 rounded-xl px-2.5 py-2 bg-white focus:outline-none focus:border-indigo-400">
+                            <option value="">Whole chapter</option>
+                            {pickedChapter.units.map((u) => (
+                              <option key={u.unitId} value={u.unitId}>{u.name}</option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+                    )}
+
+                    {subjectId && chapterId && (
+                      <label className="flex items-start gap-2 mt-2.5 cursor-pointer">
+                        <input type="checkbox" checked={confirmed} disabled={busy}
+                          onChange={(e) => setConfirmed(e.target.checked)}
+                          className="mt-0.5 accent-indigo-600" />
+                        <span className="text-xs text-gray-700">
+                          Yes — this work is for <b>{pickedSubject?.name}</b> · <b>{pickedChapter?.name}</b>
+                          {pickedUnit ? <> · <b>{pickedUnit.name}</b></> : ''}
+                        </span>
+                      </label>
+                    )}
+                  </div>
+                )}
+
                 <div className="mt-4">
                   <label className="text-[11px] font-bold text-gray-400 uppercase">Note for your mentor (optional)</label>
                   <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={2000} disabled={busy}
                     placeholder="Anything you want to explain about your work…"
-                    className="mt-1 w-full text-sm border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-teal-400 disabled:bg-gray-50" />
+                    className="mt-1 w-full text-sm text-gray-900 bg-white border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-teal-400 disabled:bg-gray-50" />
                 </div>
               </>
             )}
@@ -466,9 +550,13 @@ export default function SubmitWorkPanel({
             className="px-4 py-2.5 rounded-xl border border-gray-200 text-gray-600 text-sm font-semibold hover:bg-gray-50 disabled:opacity-50">
             Close
           </button>
-          <button onClick={submit} disabled={busy || (!queue.length && note === (submitted?.note || ''))}
+          <button onClick={submit}
+            disabled={busy || (!queue.length && note === (submitted?.note || '')) || confirmMissing}
+            title={confirmMissing ? 'Confirm which chapter this work is for first' : undefined}
             className="flex-1 px-4 py-2.5 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:bg-gray-200 disabled:text-gray-400">
-            {busy ? 'Submitting…' : queue.length ? `Submit ${queue.length} file${queue.length > 1 ? 's' : ''}` : 'Save note'}
+            {busy ? 'Submitting…'
+              : queue.length ? (confirmMissing ? 'Confirm chapter to submit' : `Submit ${queue.length} file${queue.length > 1 ? 's' : ''}`)
+              : 'Save note'}
           </button>
         </div>
       )}

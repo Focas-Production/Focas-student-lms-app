@@ -113,7 +113,9 @@ function SubjectBlock({ subject, filter }) {
     }))
     .filter(ch => ch.rows.length)
 
-  if (!chapters.length) return null
+  // A paper the filter emptied disappears, but a paper with no chapters at all
+  // stays visible — the student is enrolled for it, so the mentor should see it.
+  if (!chapters.length && subject.chapters.length) return null
 
   const tone = subject.status === 'completed' ? 'emerald' : toneFor(subject.percent)
 
@@ -135,6 +137,9 @@ function SubjectBlock({ subject, filter }) {
 
       {open && (
         <div className="px-3 pb-3 space-y-3">
+          {!chapters.length && (
+            <p className="text-xs text-gray-400 px-1 py-1">No chapters added to this paper yet.</p>
+          )}
           {chapters.map(ch => {
             const single = ch.rows.length === 1 && !ch.rows[0].unitName
             return (

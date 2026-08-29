@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { apiFetch } from '../../api'
+import ScheduleCalendar from '../../components/ScheduleCalendar'
 
 // Lazy-loaded so the ~1.4 MB LiveKit bundle is only fetched when a student
 // actually joins a class, not on every page visit.
@@ -22,6 +23,7 @@ export default function LiveClassesPage() {
   const [error, setError]     = useState('')
   const [handRaised, setHandRaised] = useState(false)
   const [submitFor, setSubmitFor] = useState(null)  // { id, title } while the panel is open
+  const [tab, setTab] = useState('list')            // 'list' | 'calendar'
 
   const load = useCallback(async () => {
     try {
@@ -101,14 +103,26 @@ export default function LiveClassesPage() {
 
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto">
-      <div className="mb-5">
-        <h1 className="text-xl md:text-2xl font-bold text-gray-900">Live Classes</h1>
-        <p className="text-gray-400 text-sm mt-1">Join your live sessions with mentors. Classes appear here once scheduled.</p>
+      <div className="mb-5 flex items-end justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-xl md:text-2xl font-bold text-gray-900">Live Classes</h1>
+          <p className="text-gray-400 text-sm mt-1">Join your live sessions with mentors. Classes appear here once scheduled.</p>
+        </div>
+        <div className="flex rounded-xl border border-gray-200 overflow-hidden text-xs font-semibold bg-white">
+          {[['list', 'List'], ['calendar', 'Calendar']].map(([key, label]) => (
+            <button key={key} onClick={() => setTab(key)}
+              className={`px-4 h-9 ${tab === key ? 'bg-teal-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
 
-      {classes === null ? (
+      {tab === 'calendar' ? (
+        <ScheduleCalendar endpoint="/api/live-classes/schedule" />
+      ) : classes === null ? (
         <div className="bg-white rounded-2xl p-8 text-center text-gray-400 text-sm">Loading…</div>
       ) : !classes.length ? (
         <div className="bg-white rounded-2xl p-8 text-center">

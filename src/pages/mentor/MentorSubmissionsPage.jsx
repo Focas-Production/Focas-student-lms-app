@@ -100,7 +100,7 @@ export default function MentorSubmissionsPage() {
                   <p className="text-xs text-gray-600 truncate">{s.classTitle}</p>
                   {s.chapter?.name && (
                     <p className="text-[11px] text-indigo-500 truncate mt-0.5">
-                      📖 {s.subject?.name ? `${s.subject.name} · ` : ''}{s.chapter.name}
+                      📖 {s.subject?.name ? `${s.subject.name} · ` : ''}{s.chapter.name}{s.unit?.name ? ` · ${s.unit.name}` : ''}
                     </p>
                   )}
                   <p className="text-[11px] text-gray-400 mt-1">

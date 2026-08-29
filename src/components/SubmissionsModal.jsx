@@ -94,7 +94,10 @@ export default function SubmissionsModal({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[88vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+      {/* colorScheme light: white card, so native inputs must not follow an OS
+          dark theme — that renders their text white-on-white. */}
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[88vh] flex flex-col"
+        style={{ colorScheme: 'light' }} onClick={(e) => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-shrink-0">
           <div className="min-w-0">
             <p className="text-sm font-bold text-gray-900">Submissions</p>
@@ -193,6 +196,21 @@ function SubmissionRow({ submission: s, open, onToggle, apiFetch, basePath, clas
   }, [s.marks, s.totalMarks, s.mentorNotes])
 
   const chip = STATUS_CHIP[s.status] || STATUS_CHIP.submitted
+
+  // What the student confirmed this submission is for — shown on the row so the
+  // reviewer can tell the chapter at a glance.
+  const workLabel = [s.subject?.name, s.chapter?.name, s.unit?.name].filter(Boolean).join(' · ')
+  // A file confirmed for a DIFFERENT subject/chapter than the submission's
+  // latest pick gets its own chip — one class can collect work for two papers.
+  const fileWorkLabel = (f) => {
+    if (!f.chapter?.name) return null
+    const subjectDiffers = String(f.subject?.subjectId || '') !== String(s.subject?.subjectId || '')
+    const differs = subjectDiffers ||
+      String(f.chapter.chapterId || '') !== String(s.chapter?.chapterId || '') ||
+      String(f.unit?.unitId || '') !== String(s.unit?.unitId || '')
+    if (!differs) return null
+    return [subjectDiffers ? f.subject?.name : null, f.chapter.name, f.unit?.name].filter(Boolean).join(' · ')
+  }
 
   const fileUrl = async (key, download = false) => {
     const d = await apiFetch(
@@ -307,6 +325,9 @@ function SubmissionRow({ submission: s, open, onToggle, apiFetch, basePath, clas
                 title="Handed in while the class was live">in class</span>
             )}
           </div>
+          {workLabel && (
+            <p className="text-[11px] text-indigo-500 truncate mt-0.5" title={workLabel}>📖 {workLabel}</p>
+          )}
           <p className="text-[11px] text-gray-400 mt-0.5">
             {s.files.length} file{s.files.length === 1 ? '' : 's'}
             {' · '}{fmtWhen(s.lastFileAt)}
@@ -349,6 +370,10 @@ function SubmissionRow({ submission: s, open, onToggle, apiFetch, basePath, clas
                       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 uppercase flex-shrink-0"
                         title="Recorded in the app during class">rec</span>
                     )}
+                    {fileWorkLabel(f) && (
+                      <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 flex-shrink-0 max-w-[130px] truncate"
+                        title={`Student marked this file for: ${fileWorkLabel(f)}`}>📖 {fileWorkLabel(f)}</span>
+                    )}
                     <button onClick={() => download(f)} title="Download"
                       className="text-gray-400 hover:text-gray-700 text-xs flex-shrink-0">⤓</button>
                   </div>
@@ -373,20 +398,20 @@ function SubmissionRow({ submission: s, open, onToggle, apiFetch, basePath, clas
                 <label className="text-[10px] text-gray-400 font-semibold">Marks</label>
                 <input type="number" min="0" step="0.5" value={marks} onChange={(e) => setMarks(e.target.value)}
                   placeholder="—" disabled={saving}
-                  className="mt-0.5 w-20 text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-teal-400" />
+                  className="mt-0.5 w-20 text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-teal-400" />
               </div>
               <span className="text-gray-300 pb-2">/</span>
               <div>
                 <label className="text-[10px] text-gray-400 font-semibold">Out of</label>
                 <input type="number" min="1" step="0.5" value={totalMarks} onChange={(e) => setTotal(e.target.value)}
                   placeholder="—" disabled={saving}
-                  className="mt-0.5 w-20 text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-teal-400" />
+                  className="mt-0.5 w-20 text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-teal-400" />
               </div>
             </div>
 
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} maxLength={4000} disabled={saving}
               placeholder="Feedback for the student…"
-              className="w-full text-sm border border-gray-200 rounded-lg px-2.5 py-2 focus:outline-none focus:border-teal-400 disabled:bg-gray-50" />
+              className="w-full text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2.5 py-2 focus:outline-none focus:border-teal-400 disabled:bg-gray-50" />
 
             {/* Corrected files back to the student */}
             <div className="mt-2.5">
