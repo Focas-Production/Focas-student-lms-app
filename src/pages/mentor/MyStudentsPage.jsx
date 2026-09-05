@@ -36,6 +36,7 @@ const TEXT = { emerald: 'text-emerald-600', amber: 'text-amber-600', rose: 'text
 const SOFT = {
   emerald: 'bg-emerald-100 text-emerald-700', amber: 'bg-amber-100 text-amber-700',
   rose: 'bg-rose-100 text-rose-600', gray: 'bg-gray-100 text-gray-500', teal: 'bg-teal-100 text-teal-700',
+  indigo: 'bg-indigo-100 text-indigo-700',
 }
 
 function useResource(url) {
@@ -82,22 +83,64 @@ function Chip({ active, onClick, children }) {
 
 // ───────────────────────────── student detail ─────────────────────────────
 
+// Every chapter/topic row sits on one ladder the server computes from live-class
+// attendance: not-allotted → allotted → attended → completed. The tabs slice
+// rows by rung; "pending" is everything short of completed.
+const STATUS_META = {
+  'not-allotted': { label: 'Not allotted', tone: 'gray' },
+  allotted:       { label: 'Allotted',     tone: 'indigo' },
+  attended:       { label: 'Attended',     tone: 'amber' },
+  completed:      { label: '✓ Done',       tone: 'emerald' },
+}
+
+// One badge per rung. Under "allotted", pendingKind says whether the class is
+// running now or went by without the student. Works for a row (pendingKind)
+// and a rolled-up chapter (liveNow / missedSessions / nextClassAt).
+function statusBadge(x) {
+  if (x.status === 'allotted') {
+    const live = x.pendingKind === 'live' || x.liveNow
+    const missed = x.pendingKind === 'missed' || (x.pendingKind == null && x.missedSessions > 0 && !x.nextClassAt)
+    if (live) return { label: 'Live now', tone: 'rose' }
+    if (missed) return { label: 'Missed', tone: 'rose' }
+  }
+  return STATUS_META[x.status] || STATUS_META['not-allotted']
+}
+
+function rowMatches(row, filter) {
+  if (filter === 'all') return true
+  if (filter === 'done') return row.completed
+  if (filter === 'pending') return !row.completed
+  return row.status === filter
+}
+
+function rowDetail(row) {
+  const parts = []
+  if (row.sessions) parts.push(`${row.sessions} session${row.sessions !== 1 ? 's' : ''} · attended ${row.percent}%`)
+  if (row.pendingKind === 'live') parts.push(row.joinedLive ? 'in the live class now' : 'class live now, not joined')
+  else if (row.pendingKind === 'upcoming') parts.push(`next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`)
+  else if (row.pendingKind === 'missed') parts.push(`missed ${row.missedSessions} class${row.missedSessions !== 1 ? 'es' : ''}`)
+  else if (row.pendingKind === 'not-allotted') parts.push('no class scheduled yet')
+  else if (row.nextClassAt) parts.push(`next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`)
+  return parts.join(' · ')
+}
+
 function TopicRow({ row }) {
+  const badge = statusBadge(row)
   return (
     <div className="flex items-start gap-3 px-3 py-2 bg-gray-50 rounded-lg">
       <div className="flex-1 min-w-0">
         <p className="text-sm text-gray-900 break-words">{row.unitName || row.chapterName}</p>
         <p className="text-[11px] text-gray-400 mt-0.5">
-          {row.sessions
-            ? `${row.sessions} session${row.sessions !== 1 ? 's' : ''} · attended ${row.percent}%`
-            : 'Not taught yet'}
+          {rowDetail(row)}
           {!row.completed && row.reason === 'teaching' && <span className="text-amber-600"> · still teaching</span>}
           {!row.completed && row.reason === 'attendance' && <span className="text-rose-500"> · attendance short</span>}
         </p>
       </div>
-      <Badge tone={row.completed ? 'emerald' : 'gray'}
-        title={row.source === 'manual' ? `Marked by ${row.markedByName || 'a mentor'}` : 'Auto-computed from attendance'}>
-        {row.completed ? '✓ Done' : 'Not done'}{row.source === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
+      <Badge tone={badge.tone}
+        title={row.source === 'manual' ? `Marked by ${row.markedByName || 'a mentor'}`
+          : row.source === 'chapter' ? 'Completed with the whole chapter'
+          : 'Auto-computed from attendance'}>
+        {badge.label}{row.source === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
       </Badge>
     </div>
   )
@@ -107,10 +150,7 @@ function SubjectBlock({ subject, filter }) {
   const [open, setOpen] = useState(true)
 
   const chapters = subject.chapters
-    .map(ch => ({
-      ...ch,
-      rows: ch.rows.filter(r => filter === 'all' || (filter === 'done' ? r.completed : !r.completed)),
-    }))
+    .map(ch => ({ ...ch, rows: ch.rows.filter(r => rowMatches(r, filter)) }))
     .filter(ch => ch.rows.length)
 
   // A paper the filter emptied disappears, but a paper with no chapters at all
@@ -142,12 +182,14 @@ function SubjectBlock({ subject, filter }) {
           )}
           {chapters.map(ch => {
             const single = ch.rows.length === 1 && !ch.rows[0].unitName
+            const chBadge = statusBadge(ch)
             return (
               <div key={ch.chapterId}>
                 {!single && (
                   <div className="flex items-center gap-2 mb-1.5 px-1">
                     <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide flex-1 min-w-0 truncate">{ch.name}</p>
-                    <Badge tone={ch.completed ? 'emerald' : 'gray'}>{ch.done}/{ch.total}</Badge>
+                    <Badge tone={chBadge.tone}>{chBadge.label}</Badge>
+                    <span className="text-[10px] text-gray-400 flex-shrink-0">{ch.done}/{ch.total}</span>
                   </div>
                 )}
                 <div className="space-y-1.5">
@@ -205,12 +247,24 @@ function AttendanceList({ studentId }) {
   )
 }
 
+// "Not done" is every topic short of completed; the three rung tabs split it by
+// how far along it is, so "allotted but never attended" is one tap.
 const DETAIL_TABS = [
-  { key: 'pending', label: 'Not done' },
-  { key: 'done',    label: 'Completed' },
-  { key: 'all',     label: 'All chapters' },
-  { key: 'classes', label: 'Class attendance' },
+  { key: 'pending',      label: 'Not done' },
+  { key: 'not-allotted', label: 'Not allotted' },
+  { key: 'allotted',     label: 'Allotted' },
+  { key: 'attended',     label: 'Attended' },
+  { key: 'done',         label: 'Completed' },
+  { key: 'all',          label: 'All chapters' },
+  { key: 'classes',      label: 'Class attendance' },
 ]
+const EMPTY_HINT = {
+  pending:        ['Nothing pending', 'Every chapter in your papers is completed for this student.'],
+  'not-allotted': ['Everything is allotted', 'Every chapter in your papers has a class assigned to this student.'],
+  allotted:       ['Nothing waiting', 'No allotted chapter is still unattended for this student.'],
+  attended:       ['Nothing in between', 'No attended chapter is still open for this student.'],
+  done:           ['Nothing completed yet', 'No chapter of yours is completed for this student yet.'],
+}
 
 function StudentPanel({ student, onClose }) {
   const { data: report, error, loading } = useResource(`/api/mentor/students/${student.id}/report`)
@@ -221,9 +275,16 @@ function StudentPanel({ student, onClose }) {
   const filter = tab === 'classes' ? 'all' : tab
 
   const shown = useMemo(() => (s?.subjects || []).reduce((n, subj) =>
-    n + subj.chapters.reduce((m, ch) =>
-      m + ch.rows.filter(r => filter === 'all' || (filter === 'done' ? r.completed : !r.completed)).length, 0), 0),
+    n + subj.chapters.reduce((m, ch) => m + ch.rows.filter(r => rowMatches(r, filter)).length, 0), 0),
     [s, filter])
+  const tabCount = (key) => {
+    if (!s) return null
+    if (key === 'pending') return s.totalItems - s.completedItems
+    if (key === 'done') return s.completedItems
+    if (key === 'all') return s.totalItems
+    if (key === 'classes') return null
+    return s.itemStatusCounts?.[key] ?? 0
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
@@ -277,9 +338,7 @@ function StudentPanel({ student, onClose }) {
 
               <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5 mb-3">
                 {DETAIL_TABS.map(t => {
-                  const n = t.key === 'pending' ? s.totalItems - s.completedItems
-                    : t.key === 'done' ? s.completedItems
-                    : t.key === 'all' ? s.totalItems : null
+                  const n = tabCount(t.key)
                   return (
                     <Chip key={t.key} active={tab === t.key} onClick={() => setTab(t.key)}>
                       {t.label}{n != null && ` ${n}`}
@@ -293,10 +352,8 @@ function StudentPanel({ student, onClose }) {
               ) : !s.subjects.length ? (
                 <Empty title="Nothing to show" hint="No chapters from your papers for this student yet." />
               ) : !shown ? (
-                <Empty title={filter === 'done' ? 'Nothing completed yet' : 'Nothing pending'}
-                  hint={filter === 'done'
-                    ? 'No chapter of yours is completed for this student yet.'
-                    : 'Every chapter in your papers is completed for this student.'} />
+                <Empty title={(EMPTY_HINT[filter] || ['Nothing here'])[0]}
+                  hint={(EMPTY_HINT[filter] || [])[1]} />
               ) : (
                 <div className="space-y-2">
                   {s.subjects.map(subj => <SubjectBlock key={subj.subjectId} subject={subj} filter={filter} />)}

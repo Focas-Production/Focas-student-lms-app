@@ -183,8 +183,8 @@ export default function LiveSessionProvider({ children }) {
     // first, and be explicit that switching also starts a not-yet-live booking.
     const label = `${track.roomLabel} · ${track.trackLabel}`
     const msg = track.state === 'scheduled'
-      ? `Switch to ${label}? This will start "${track.title}". Students in your current track stay connected.`
-      : `Switch to ${label}? Students in your current track stay connected.`
+      ? `Switch to ${label}? This will start "${track.title}". Your current class stays live and its students stay connected; you can switch back any time.`
+      : `Switch to ${label}? Your current class stays live and its students stay connected; you can switch back any time.`
     if (!window.confirm(msg)) return
     setSwitching(true); setHostError('')
     try {

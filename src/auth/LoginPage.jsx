@@ -240,7 +240,7 @@ export default function LoginPage() {
           <div className="mb-4 flex justify-center">
             <img src="/focas.jpeg" alt="FOCAS Edu Learning" className="h-14 w-auto object-contain" />
           </div>
-          <p className="text-gray-500 text-sm">Student &amp; Mentor Portal</p>
+          <p className="text-gray-500 text-sm">Student &amp; Tutor Portal</p>
         </div>
 
         <div className="bg-white rounded-3xl shadow-xl p-8">

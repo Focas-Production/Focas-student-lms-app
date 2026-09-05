@@ -8,7 +8,7 @@ const NAV_ITEMS = [
     icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>,
   },
   {
-    to: '/mentor/live-classes', label: 'Live Classes', short: 'Live',
+    to: '/mentor/live-classes', label: 'Tutor Session', short: 'Session',
     icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>,
   },
   {
@@ -48,7 +48,7 @@ export default function MentorLayout() {
         <div className="px-5 py-5 border-b border-teal-700">
           <div className="flex items-center gap-2.5">
             <img src="/focas.jpeg" alt="FOCAS Edu Learning" className="h-8 w-auto object-contain bg-white rounded-md px-1.5 py-1" />
-            <p className="text-teal-200 text-xs font-medium">Mentor Portal</p>
+            <p className="text-teal-200 text-xs font-medium">Tutor Portal</p>
           </div>
         </div>
 
@@ -91,7 +91,7 @@ export default function MentorLayout() {
         <header className="md:hidden bg-teal-900 px-4 py-3 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
             <img src="/focas.jpeg" alt="FOCAS Edu Learning" className="h-7 w-auto object-contain bg-white rounded-md px-1.5 py-1" />
-            <p className="text-teal-200 text-xs font-medium truncate">Mentor Portal</p>
+            <p className="text-teal-200 text-xs font-medium truncate">Tutor Portal</p>
           </div>
           <button onClick={() => { logout(); navigate('/login', { replace: true }) }}
             title="Log out"

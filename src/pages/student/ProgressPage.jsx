@@ -153,37 +153,85 @@ const SUBJECT_FILTERS = [
   { key: 'not-started', label: 'Not started' },
 ]
 
+// Every chapter/topic row sits on one ladder the server computes from live-class
+// attendance: not-allotted → allotted → attended → completed. These chips slice
+// the rows by rung; the subject chips above slice by paper.
+const STATUS_FILTERS = [
+  { key: 'all',          label: 'All topics' },
+  { key: 'not-allotted', label: 'Not allotted' },
+  { key: 'allotted',     label: 'Allotted' },
+  { key: 'attended',     label: 'Attended' },
+  { key: 'completed',    label: 'Completed' },
+]
+const STATUS_META = {
+  'not-allotted': { label: 'Not allotted', tone: 'gray' },
+  allotted:       { label: 'Allotted',     tone: 'indigo' },
+  attended:       { label: 'Attended',     tone: 'amber' },
+  completed:      { label: '✓ Done',       tone: 'emerald' },
+}
+
+// One badge per rung. Under "allotted" the server's pendingKind says whether
+// the class is running now or already went by without them — both worth their
+// own word. Works for a row (pendingKind) and a rolled-up chapter (liveNow /
+// missedSessions / nextClassAt).
+function statusBadge(x) {
+  if (x.status === 'allotted') {
+    const live = x.pendingKind === 'live' || x.liveNow
+    const missed = x.pendingKind === 'missed' || (x.pendingKind == null && x.missedSessions > 0 && !x.nextClassAt)
+    if (live) return { label: 'Live now', tone: 'rose' }
+    if (missed) return { label: 'Missed', tone: 'rose' }
+  }
+  return STATUS_META[x.status] || STATUS_META['not-allotted']
+}
+
+const rowMatches = (row, filter) => filter === 'all' || row.status === filter
+
+// The grey line under a topic: what happened, and what comes next.
+function rowDetail(row) {
+  const parts = []
+  if (row.sessions) parts.push(`${row.sessions} class${row.sessions !== 1 ? 'es' : ''} · you attended ${row.percent}%`)
+  if (row.pendingKind === 'live') parts.push(row.joinedLive ? "You're in this class now" : 'A class is live now — join from Live classes')
+  else if (row.pendingKind === 'upcoming') parts.push(`Next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`)
+  else if (row.pendingKind === 'missed') parts.push(`You missed ${row.missedSessions} class${row.missedSessions !== 1 ? 'es' : ''}`)
+  else if (row.pendingKind === 'not-allotted') parts.push('No class scheduled yet')
+  else if (row.nextClassAt) parts.push(`Next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`)
+  return parts.join(' · ')
+}
+
 function TopicRow({ row }) {
+  const badge = statusBadge(row)
   return (
     <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl">
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-gray-900 break-words">{row.unitName || row.chapterName}</p>
         <p className="text-xs text-gray-400 mt-1">
-          {row.sessions
-            ? `${row.sessions} class${row.sessions !== 1 ? 'es' : ''} · you attended ${row.percent}%`
-            : 'Not taught yet'}
+          {rowDetail(row)}
           {!row.completed && row.reason === 'attendance' && <span className="text-amber-600"> · attend more to complete</span>}
           {!row.completed && row.reason === 'teaching' && <span className="text-gray-400"> · still being taught</span>}
         </p>
       </div>
-      <Badge tone={row.completed ? 'emerald' : 'gray'}>{row.completed ? '✓ Done' : 'Pending'}</Badge>
+      <Badge tone={badge.tone}>{badge.label}</Badge>
     </div>
   )
 }
 
-function SubjectCard({ subject, query, defaultOpen }) {
+function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen }) {
   const [open, setOpen] = useState(defaultOpen)
   const q = query.trim().toLowerCase()
-  // A live search forces every card open — a collapsed match looks like no match.
-  const expanded = q ? true : open
+  // A live search or a status filter forces every card open — a collapsed
+  // match looks like no match.
+  const expanded = (q || rowFilter !== 'all') ? true : open
 
-  const chapters = q
-    ? subject.chapters
-        .map(ch => ch.name.toLowerCase().includes(q)
-          ? ch
-          : { ...ch, rows: ch.rows.filter(r => (r.unitName || '').toLowerCase().includes(q)) })
-        .filter(ch => ch.rows.length)
-    : subject.chapters
+  // Search narrows by name (a matching chapter keeps every topic); the status
+  // chips then narrow by rung. A chapter with nothing left disappears.
+  const chapters = subject.chapters
+    .map(ch => {
+      const rows = (q && !ch.name.toLowerCase().includes(q))
+        ? ch.rows.filter(r => (r.unitName || '').toLowerCase().includes(q))
+        : ch.rows
+      return { ...ch, rows: rows.filter(r => rowMatches(r, rowFilter)) }
+    })
+    .filter(ch => ch.rows.length)
 
   const tone = subject.status === 'completed' ? 'emerald' : toneFor(subject.percent)
 
@@ -212,16 +260,19 @@ function SubjectCard({ subject, query, defaultOpen }) {
         <div className="px-3 pb-3 space-y-3">
           {!chapters.length ? (
             <p className="text-xs text-gray-400 px-1 py-2">
-              {subject.chapters.length ? 'Nothing here matches your search.' : 'No chapters here yet.'}
+              {subject.chapters.length ? 'Nothing here matches the current filter.' : 'No chapters here yet.'}
             </p>
           ) : chapters.map(ch => {
-            // A chapter with no units is one row that already carries its name.
+            // A chapter with no units is one row that already carries its name
+            // and its own status badge.
             const single = ch.rows.length === 1 && !ch.rows[0].unitName
+            const chBadge = statusBadge(ch)
             return (
               <div key={ch.chapterId}>
                 {!single && (
                   <div className="flex items-center gap-2 mb-1.5 px-1">
                     <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide flex-1 min-w-0 truncate">{ch.name}</p>
+                    <Badge tone={chBadge.tone}>{chBadge.label}</Badge>
                     <Bar percent={ch.percent} tone={ch.completed ? 'emerald' : toneFor(ch.percent)} className="w-16 flex-shrink-0" />
                     <span className="text-[10px] text-gray-400 flex-shrink-0">{ch.done}/{ch.total}</span>
                   </div>
@@ -240,17 +291,21 @@ function SubjectCard({ subject, query, defaultOpen }) {
 
 function SubjectsTab({ syllabus }) {
   const [filter, setFilter] = useState('all')
+  const [rowFilter, setRowFilter] = useState('all')
   const [query, setQuery] = useState('')
 
   const q = query.trim().toLowerCase()
   const visible = syllabus.subjects.filter(s =>
     (filter === 'all' || s.status === filter) &&
+    (rowFilter === 'all' || s.chapters.some(ch => ch.rows.some(r => rowMatches(r, rowFilter)))) &&
     (!q || s.name.toLowerCase().includes(q) ||
       s.chapters.some(ch => ch.name.toLowerCase().includes(q) || ch.rows.some(r => (r.unitName || '').toLowerCase().includes(q)))))
 
   if (!syllabus.subjects.length) {
-    return <Empty title="No chapters yet" hint="Once you attend live classes, your chapter progress shows up here." />
+    return <Empty title="No chapters yet" hint="Once you attend tutor sessions, your chapter progress shows up here." />
   }
+
+  const statusCount = (key) => (key === 'all' ? syllabus.totalItems : (syllabus.itemStatusCounts?.[key] ?? 0))
 
   return (
     <div className="space-y-3">
@@ -265,12 +320,22 @@ function SubjectsTab({ syllabus }) {
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search chapter or topic…"
           className="sm:ml-auto w-full sm:w-52 px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
       </div>
+      {/* Where each topic stands: allotted a class, attended one, or done. */}
+      <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
+        {STATUS_FILTERS.map(f => (
+          <Chip key={f.key} active={rowFilter === f.key} onClick={() => setRowFilter(f.key)}>
+            {f.label} {statusCount(f.key)}
+          </Chip>
+        ))}
+      </div>
 
       {!visible.length ? (
         <Empty title="No match" hint="Nothing here matches the current filter." />
       ) : (
         <div className="space-y-2">
-          {visible.map(s => <SubjectCard key={s.subjectId} subject={s} query={query} defaultOpen={visible.length <= 2} />)}
+          {visible.map(s => (
+            <SubjectCard key={s.subjectId} subject={s} query={query} rowFilter={rowFilter} defaultOpen={visible.length <= 2} />
+          ))}
         </div>
       )}
     </div>

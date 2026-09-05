@@ -70,6 +70,8 @@ export default function TrackRoomPage() {
         title: c?.title || label,
         subtitle: [c?.room?.label || c?.roomLabel, c?.track?.label || c?.trackLabel]
           .filter(Boolean).join(' · ') || label,
+        // Hosts get the full class (host.userId); students the flat shape.
+        hostUserId: c?.hostUserId || (c?.host?.userId ? String(c.host.userId) : ''),
       })
     } catch (err) {
       setError(err.message || 'Could not enter this track')
@@ -110,6 +112,7 @@ export default function TrackRoomPage() {
           token={session.token}
           wsUrl={session.wsUrl}
           canHost={isHost}
+          hostIdentity={session.hostUserId}
           classId={session.classId}
           title={session.title}
           subtitle={session.subtitle}

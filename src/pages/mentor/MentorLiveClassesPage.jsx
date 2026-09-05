@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, Fragment } from 'react'
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { apiFetch } from '../../api'
+import { groupRoomSlots, slotPrimaryClass, trackLabelOf } from '../../utils/roomSlots'
 import AttendanceModal from '../../components/AttendanceModal'
 import SubmissionsModal from '../../components/SubmissionsModal'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
@@ -104,6 +105,116 @@ function CoveredModal({ cls, subject, busyKey, error, onToggle, onClose }) {
   )
 }
 
+const StatusPill = ({ status }) => (
+  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${STATUS_STYLE[status] || ''}`}>
+    {status === 'live' ? '● live' : status}
+  </span>
+)
+
+// What one class teaches — the booked chapter/unit, plus anything extra it finished.
+function ClassMeta({ c }) {
+  return (
+    <>
+      {c.chapter?.name && (
+        <p className="text-xs text-indigo-500 truncate mt-0.5">
+          📖 {c.subject?.name ? `${c.subject.name} · ` : ''}{c.chapter.name}{c.unit?.name ? ` · ${c.unit.name}` : ''}
+        </p>
+      )}
+      {c.extraItems?.length > 0 && (
+        <p className="text-xs text-teal-600 truncate mt-0.5"
+          title={c.extraItems.map((x) => x.unit?.name ? `${x.chapter?.name} · ${x.unit.name}` : x.chapter?.name).join(', ')}>
+          ✓ also finished: {c.extraItems.map((x) => x.unit?.name || x.chapter?.name).filter(Boolean).join(', ')}
+        </p>
+      )}
+    </>
+  )
+}
+
+// End / Attendance / Submissions for one track's class — only once it's live or over.
+function TrackActions({ cls, busyId, subCount, compact = false, onEnd, onAttendance, onSubmissions }) {
+  if (cls.status !== 'live' && cls.status !== 'ended') return null
+  const size = compact ? 'px-3 py-1.5 text-xs' : 'px-3 py-2 text-sm'
+  return (
+    <>
+      {cls.status === 'live' && (
+        <button onClick={() => onEnd(cls)} disabled={busyId === cls._id}
+          className={`${size} rounded-xl border border-red-200 text-red-600 font-semibold hover:bg-red-50 whitespace-nowrap`}>
+          End
+        </button>
+      )}
+      <button onClick={() => onAttendance(cls)}
+        className={`${size} rounded-xl border border-gray-200 text-gray-600 font-semibold hover:bg-gray-50 whitespace-nowrap`}>
+        Attendance
+      </button>
+      <button onClick={() => onSubmissions(cls)}
+        title="Student work handed in for this class"
+        className={`${size} rounded-xl border font-semibold whitespace-nowrap ${
+          subCount?.pending
+            ? 'border-amber-300 text-amber-700 hover:bg-amber-50'
+            : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+        Submissions
+        {subCount?.total > 0 && (
+          <span className={`ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+            subCount.pending ? 'bg-amber-500 text-white' : 'bg-gray-200 text-gray-600'}`}>
+            {subCount.pending || subCount.total}
+          </span>
+        )}
+      </button>
+    </>
+  )
+}
+
+// The controls for one room slot (see utils/roomSlots.js). A mentor hosts a
+// ROOM: one Start / Enter / Return button gets them in — Track 1 first, or
+// whichever track is already live — and they switch tracks from inside. The
+// per-track controls (End, Attendance, Submissions) follow, unless the caller
+// lays those out itself. The list cards and every calendar surface (live
+// strip, agenda rows, detail modal) render this same component.
+//   compact     small buttons, the room button only (calendar rows)
+//   showTracks  false → the caller renders the per-track controls
+function MentorSlotActions({ slot, busyId, sessionClassId, subCounts = {}, compact = false, showTracks = true,
+  onStart, onEnd, onAttendance, onSubmissions }) {
+  const primary = slotPrimaryClass(slot, sessionClassId)
+  const ran = slot.classes.filter((c) => c.status === 'live' || c.status === 'ended')
+  const tracksHere = showTracks && !compact && ran.length > 0
+  const liveSingle = compact && !slot.isGroup && slot.status === 'live'
+  if (!primary && !tracksHere && !liveSingle) return null
+
+  const busy = !!primary && busyId === primary._id
+  const size = compact ? 'px-3 py-1.5 text-xs' : 'px-4 py-2 text-sm'
+  const trackProps = { busyId, compact, onEnd, onAttendance, onSubmissions }
+  return (
+    <>
+      {primary && (
+        <button onClick={() => onStart(primary)} disabled={busy}
+          title={slot.isGroup ? `Opens ${trackLabelOf(primary)} — switch tracks from inside the room` : undefined}
+          className={`${size} rounded-xl bg-teal-600 text-white font-semibold hover:bg-teal-700 disabled:bg-gray-300 whitespace-nowrap`}>
+          {busy ? '…' : primary._id === sessionClassId ? 'Return' : primary.status === 'live' ? 'Enter' : 'Start'}
+        </button>
+      )}
+      {liveSingle && (
+        <button onClick={() => onEnd(slot.classes[0])} disabled={busy}
+          className="px-3 py-1.5 text-xs rounded-xl border border-red-200 text-red-600 font-semibold hover:bg-red-50 whitespace-nowrap">
+          End
+        </button>
+      )}
+      {tracksHere && !slot.isGroup && (
+        <TrackActions cls={slot.classes[0]} subCount={subCounts[slot.classes[0]._id]} {...trackProps} />
+      )}
+      {tracksHere && slot.isGroup && (
+        <div className="w-full space-y-1.5 pt-1">
+          {ran.map((c) => (
+            <div key={c._id} className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-gray-600 min-w-[64px]">{trackLabelOf(c)}</span>
+              <TrackActions cls={c} subCount={subCounts[c._id]} {...trackProps} compact />
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
 // Mentors host what the admin books for them — they don't schedule. This page is
 // their assignment list plus the controls to run a class.
 //
@@ -123,8 +234,13 @@ export default function MentorLiveClassesPage() {
   const [tab, setTab]               = useState('list') // 'list' | 'calendar'
   const [page, setPage]             = useState(1)
   const [pageInfo, setPageInfo]     = useState(null)   // { total, pages } from the server
+  const [calTick, setCalTick]       = useState(0)      // bumped when this page changes a class, so the calendar refetches
 
   const { session, minimized, startOrEnter: enterSession, subCounts, setSubCounts } = useLiveSession()
+
+  // One card per room slot: the tracks of a room in the same period collapse
+  // into a single entry with one Start button (see utils/roomSlots.js).
+  const slots = useMemo(() => (classes ? groupRoomSlots(classes) : null), [classes])
 
   const load = useCallback(async () => {
     try {
@@ -233,6 +349,41 @@ export default function MentorLiveClassesPage() {
     return { completed: ch.completed, isUnit: false, subjectId: s._id, chapterId: ch._id, unitId: null }
   }
 
+  // After class: one click marks what it taught as completed, plus "More" for
+  // anything else the session got through beyond its booking.
+  const renderSyllabusButtons = (c, compact = false) => {
+    if (c.status !== 'ended') return null
+    const size = compact ? 'px-3 py-1.5 text-xs' : 'px-3 py-2 text-sm'
+    const p = classProgress(c)
+    // Name exactly what gets marked — a bare "Completed" left it unclear
+    // whether the class, the unit, or the chapter was done.
+    const name = p ? (p.isUnit ? c.unit?.name : c.chapter?.name) : ''
+    const kind = p?.isUnit ? 'unit' : 'chapter'
+    return (
+      <>
+        {p && (
+          <button onClick={() => toggleProgress(p.subjectId, p.chapterId, p.unitId, !p.completed)}
+            title={p.completed
+              ? `The ${kind} "${name}" is marked completed — click to unmark`
+              : `Mark the ${kind} "${name}" as completed`}
+            className={`${size} rounded-xl font-semibold whitespace-nowrap border max-w-[180px] sm:max-w-[220px] truncate ${
+              p.completed
+                ? 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100'
+                : 'border-teal-300 text-teal-700 hover:bg-teal-50'}`}>
+            {p.completed ? `✓ ${name} completed` : `Mark "${name}" done`}
+          </button>
+        )}
+        {c.subject?.subjectId && (
+          <button onClick={() => setCovered(c._id)}
+            title="Finished more than scheduled? Mark extra chapters or units this session completed"
+            className={`${size} rounded-xl border border-teal-300 text-teal-700 font-semibold hover:bg-teal-50 whitespace-nowrap`}>
+            ＋ More
+          </button>
+        )}
+      </>
+    )
+  }
+
   const startOrEnter = async (cls) => {
     setBusyId(cls._id); setError('')
     try {
@@ -246,10 +397,16 @@ export default function MentorLiveClassesPage() {
 
   const endClass = async (cls) => {
     if (!confirm('End this class for everyone?')) return
-    setBusyId(cls._id)
-    try { await apiFetch(`/api/live-classes/manage/${cls._id}/end`, { method: 'POST' }); await load() }
-    catch (err) { setError(err.message) }
-    finally { setBusyId(null) }
+    setBusyId(cls._id); setError('')
+    try {
+      await apiFetch(`/api/live-classes/manage/${cls._id}/end`, { method: 'POST' })
+      setCalTick((t) => t + 1)   // the calendar refetches so the slot flips to ended
+      await load()
+    } catch (err) {
+      setError(err.message || 'Could not end the class')
+    } finally {
+      setBusyId(null)
+    }
   }
 
   const openAttendance = async (cls) => {
@@ -309,9 +466,9 @@ export default function MentorLiveClassesPage() {
     <div className="p-4 md:p-8 max-w-4xl mx-auto">
       <div className="flex items-end justify-between gap-3 flex-wrap mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-1">Live Classes</h1>
+          <h1 className="text-2xl font-bold text-gray-900 mb-1">Tutor Session</h1>
           <p className="text-gray-400 text-sm">
-            Classes your admin has assigned to you. Start one to go live with your students.
+            Sessions your admin has assigned to you. Start one to go live with your students.
           </p>
         </div>
         <div className="flex rounded-xl border border-gray-200 overflow-hidden text-xs font-semibold bg-white">
@@ -327,7 +484,24 @@ export default function MentorLiveClassesPage() {
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
 
       {tab === 'calendar' ? (
-        <ScheduleCalendar endpoint="/api/live-classes/manage/schedule" />
+        <ScheduleCalendar
+          endpoint="/api/live-classes/manage/schedule"
+          // Starting a class changes the session token; minimizing brings this
+          // page back mid-class; ending bumps calTick — each should refetch.
+          refreshKey={`${session?.token || ''}|${minimized ? 1 : 0}|${calTick}`}
+          // The detail modal closes before any action runs: the room, the
+          // attendance/submissions modals and the page's error banner all
+          // render outside the calendar, and must not be hidden behind it.
+          groupRooms
+          renderActions={(slot, { compact, close }) => (
+            <MentorSlotActions slot={slot} busyId={busyId} sessionClassId={session?.classId}
+              subCounts={subCounts} compact={compact}
+              onStart={(cls) => { close(); startOrEnter(cls) }}
+              onEnd={(cls) => { close(); endClass(cls) }}
+              onAttendance={(cls) => { close(); openAttendance(cls) }}
+              onSubmissions={(cls) => { close(); setSubmissions({ id: cls._id, title: cls.title }) }} />
+          )}
+        />
       ) : classes === null ? (
         <div className="bg-white rounded-2xl p-8 text-center text-gray-400 text-sm">Loading…</div>
       ) : loadError ? (
@@ -346,104 +520,64 @@ export default function MentorLiveClassesPage() {
         </div>
       ) : (
         <><div className="space-y-3">
-          {classes.map((c) => (
-            <div key={c._id} className="bg-white rounded-2xl shadow-sm p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${STATUS_STYLE[c.status] || ''}`}>
-                    {c.status === 'live' ? '● live' : c.status}
-                  </span>
-                  {c.room?.label && (
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">
-                      {c.room.label} · {c.track?.label}
-                    </span>
-                  )}
-                </div>
-                <p className="text-sm font-semibold text-gray-900 truncate">{c.title}</p>
-                {c.chapter?.name && (
-                  <p className="text-xs text-indigo-500 truncate mt-0.5">
-                    📖 {c.subject?.name ? `${c.subject.name} · ` : ''}{c.chapter.name}{c.unit?.name ? ` · ${c.unit.name}` : ''}
-                  </p>
-                )}
-                {c.extraItems?.length > 0 && (
-                  <p className="text-xs text-teal-600 truncate mt-0.5"
-                    title={c.extraItems.map((x) => x.unit?.name ? `${x.chapter?.name} · ${x.unit.name}` : x.chapter?.name).join(', ')}>
-                    ✓ also finished: {c.extraItems.map((x) => x.unit?.name || x.chapter?.name).filter(Boolean).join(', ')}
-                  </p>
-                )}
-                <p className="text-xs text-gray-400 mt-1">
-                  {fmtWhen(c.scheduledStart)}
-                  {runDuration(c) && <span className="text-gray-500"> · ran {runDuration(c)}</span>}
-                </p>
-              </div>
+          {slots.map((s) => {
+            const only = s.isGroup ? null : s.classes[0]   // a lone class keeps the classic card
+            return (
+              <div key={s._id} className="bg-white rounded-2xl shadow-sm p-4">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <StatusPill status={s.status} />
+                      {s.roomLabel && (
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">
+                          {s.roomLabel} · {s.trackLabel}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm font-semibold text-gray-900 truncate">{s.title}</p>
+                    {only && <ClassMeta c={only} />}
+                    <p className="text-xs text-gray-400 mt-1">
+                      {fmtWhen(s.scheduledStart)}
+                      {only && runDuration(only) && <span className="text-gray-500"> · ran {runDuration(only)}</span>}
+                      {s.isGroup && <span className="text-gray-500"> · Start once, then switch tracks inside the room</span>}
+                    </p>
+                  </div>
 
-              <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
-                {/* After class: one click marks what it taught as completed */}
-                {c.status === 'ended' && (() => {
-                  const p = classProgress(c)
-                  if (!p) return null
-                  // Name exactly what gets marked — a bare "Completed" left it
-                  // unclear whether the class, the unit, or the chapter was done.
-                  const name = p.isUnit ? c.unit?.name : c.chapter?.name
-                  const kind = p.isUnit ? 'unit' : 'chapter'
-                  return (
-                    <button onClick={() => toggleProgress(p.subjectId, p.chapterId, p.unitId, !p.completed)}
-                      title={p.completed
-                        ? `The ${kind} "${name}" is marked completed — click to unmark`
-                        : `Mark the ${kind} "${name}" as completed`}
-                      className={`px-3 py-2 rounded-xl text-sm font-semibold whitespace-nowrap border max-w-[180px] sm:max-w-[220px] truncate ${
-                        p.completed
-                          ? 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100'
-                          : 'border-teal-300 text-teal-700 hover:bg-teal-50'}`}>
-                      {p.completed ? `✓ ${name} completed` : `Mark "${name}" done`}
-                    </button>
-                  )
-                })()}
-                {/* …and anything else the session got through beyond its booking */}
-                {c.status === 'ended' && c.subject?.subjectId && (
-                  <button onClick={() => setCovered(c._id)}
-                    title="Finished more than scheduled? Mark extra chapters or units this session completed"
-                    className="px-3 py-2 rounded-xl border border-teal-300 text-teal-700 text-sm font-semibold hover:bg-teal-50 whitespace-nowrap">
-                    ＋ More
-                  </button>
-                )}
-                {(c.status === 'scheduled' || c.status === 'live') && (
-                  <button onClick={() => startOrEnter(c)} disabled={busyId === c._id}
-                    className="px-4 py-2 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:bg-gray-300 whitespace-nowrap">
-                    {busyId === c._id ? '…' : session?.classId === c._id ? 'Return' : c.status === 'live' ? 'Enter' : 'Start'}
-                  </button>
-                )}
-                {c.status === 'live' && (
-                  <button onClick={() => endClass(c)} disabled={busyId === c._id}
-                    className="px-3 py-2 rounded-xl border border-red-200 text-red-600 text-sm font-semibold hover:bg-red-50 whitespace-nowrap">
-                    End
-                  </button>
-                )}
-                {(c.status === 'live' || c.status === 'ended') && (
-                  <button onClick={() => openAttendance(c)}
-                    className="px-3 py-2 rounded-xl border border-gray-200 text-gray-600 text-sm font-semibold hover:bg-gray-50 whitespace-nowrap">
-                    Attendance
-                  </button>
-                )}
-                {(c.status === 'live' || c.status === 'ended') && (
-                  <button onClick={() => setSubmissions({ id: c._id, title: c.title })}
-                    title="Student work handed in for this class"
-                    className={`px-3 py-2 rounded-xl border text-sm font-semibold whitespace-nowrap ${
-                      subCounts[c._id]?.pending
-                        ? 'border-amber-300 text-amber-700 hover:bg-amber-50'
-                        : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
-                    Submissions
-                    {subCounts[c._id]?.total > 0 && (
-                      <span className={`ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
-                        subCounts[c._id].pending ? 'bg-amber-500 text-white' : 'bg-gray-200 text-gray-600'}`}>
-                        {subCounts[c._id].pending || subCounts[c._id].total}
-                      </span>
-                    )}
-                  </button>
+                  <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
+                    {only && renderSyllabusButtons(only)}
+                    <MentorSlotActions slot={s} busyId={busyId} sessionClassId={session?.classId}
+                      subCounts={subCounts} showTracks={!s.isGroup}
+                      onStart={startOrEnter} onEnd={endClass} onAttendance={openAttendance}
+                      onSubmissions={(cls) => setSubmissions({ id: cls._id, title: cls.title })} />
+                  </div>
+                </div>
+
+                {/* The room's tracks: what each teaches, and its own after-class controls */}
+                {s.isGroup && (
+                  <div className="mt-3 pt-3 border-t border-gray-100 space-y-2.5">
+                    {s.classes.map((c) => (
+                      <div key={c._id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+                            {trackLabelOf(c)}
+                            <StatusPill status={c.status} />
+                          </p>
+                          <ClassMeta c={c} />
+                          {runDuration(c) && <p className="text-xs text-gray-400 mt-0.5">ran {runDuration(c)}</p>}
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {renderSyllabusButtons(c, true)}
+                          <TrackActions cls={c} busyId={busyId} subCount={subCounts[c._id]} compact
+                            onEnd={endClass} onAttendance={openAttendance}
+                            onSubmissions={(cls) => setSubmissions({ id: cls._id, title: cls.title })} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
         {pageInfo?.pages > 1 && (
@@ -453,7 +587,7 @@ export default function MentorLiveClassesPage() {
               ‹ Prev
             </button>
             <span className="text-xs text-gray-500 font-semibold">
-              Page {page} of {pageInfo.pages} · {pageInfo.total} classes
+              Page {page} of {pageInfo.pages} · {pageInfo.total} slots
             </span>
             <button onClick={() => setPage((p) => p + 1)} disabled={page >= pageInfo.pages}
               className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 text-xs font-semibold hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-white">

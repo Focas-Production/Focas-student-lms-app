@@ -24,7 +24,27 @@ const LIVE_LAYOUT_CSS = `
 }
 .focas-side-grid > .lk-participant-tile { aspect-ratio: 16 / 10; min-height: 0; }
 .focas-focus > .lk-carousel { height: 100%; }
-.focas-pip .lk-control-bar, .focas-pip .lk-chat { display: none; }
+.focas-pip .lk-control-bar, .focas-pip .focas-control-row, .focas-pip .lk-chat { display: none; }
+/* Bottom bar: LiveKit's control bar and our extra buttons share one row, so
+   they read as one toolbar. Under 760px LiveKit drops its button labels for
+   icons; ours follow suit so the row still fits a phone without wrapping. */
+.focas-control-row {
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  border-top: 1px solid var(--lk-border-color);
+}
+.focas-control-row .lk-control-bar { border-top: 0; }
+.focas-extra-controls {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.75rem 0.75rem 0.75rem 0; margin-left: -0.25rem;
+}
+@media (max-width: 760px) {
+  .focas-extra-controls .focas-ctl-label { display: none; }
+}
+/* Host labels (Minimize, Pop out, Timer) go icon-only earlier: with the track
+   switcher in the same row, a laptop-width bar would otherwise wrap. */
+@media (max-width: 1400px) {
+  .focas-extra-controls .focas-ctl-label-wide { display: none; }
+}
 `
 
 // Host preference: pop out automatically when switching tabs (Meet-style).
@@ -84,6 +104,10 @@ const NOTIFY_TOPIC = 'focas-notify'
 //
 // onLeave(info?) — `info.removed` is true when the host removed this
 // participant, so the page can say so instead of silently dropping them.
+//
+// hostIdentity (students) — the host's LiveKit identity (their user id), so the
+// room can show "Waiting for the mentor" while they're out: a class stays live
+// until the host presses End, even with nobody in the room.
 export default function LiveRoom(props) {
   return (
     <ErrorBoundary onReset={props.onLeave}>
@@ -93,7 +117,7 @@ export default function LiveRoom(props) {
 }
 
 function LiveRoomInner({
-  token, wsUrl, title, subtitle, onLeave, canHost,
+  token, wsUrl, title, subtitle, onLeave, canHost, hostIdentity,
   tracks, activeClassId, onSwitchTrack, switching, mirrors, onToggleMirror, notice,
   onHandEvent, toast, onRaiseHand, handRaised, submitClass, classId,
   minimized, onToggleMinimize,
@@ -176,28 +200,37 @@ function LiveRoomInner({
   // The room timer's state, mirrored into the pop-out (ClassTimer owns it).
   const [timerState, setTimerState] = useState(null)
 
+  // Pop out + Auto as one joined pair in the bottom bar, in LiveKit's button
+  // style; the active/blocked states override its background.
   const pipButton = canHost && (
     <span style={{ display: 'inline-flex', flexShrink: 0 }}>
       <button
+        type="button"
+        className="lk-button"
         onClick={pip.toggle}
         disabled={pip.busy}
+        aria-pressed={!!pip.active}
         title={pip.active
           ? 'Stop picture-in-picture'
           : pip.supported
             ? 'Pop out — float the class in a small always-on-top window that stays visible while you switch tabs or apps'
             : 'Picture-in-picture needs Chrome or Edge on a computer'}
         style={{
-          background: pip.active ? '#0d9488' : 'rgba(0,0,0,0.55)', color: '#fff',
-          border: `1px solid ${pip.active ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
-          fontSize: 12, fontWeight: 600, padding: '4px 10px',
-          borderRadius: pip.autoSupported ? '8px 0 0 8px' : 8,
-          cursor: pip.busy ? 'default' : 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+          backgroundColor: pip.active ? '#0d9488' : undefined,
+          color: pip.active ? '#fff' : undefined,
+          borderRadius: pip.autoSupported ? 'var(--lk-border-radius) 0 0 var(--lk-border-radius)' : undefined,
           opacity: pip.supported ? 1 : 0.6,
         }}
-      >▣ {pip.busy ? '…' : pip.active ? 'Pop-out on' : 'Pop out'}</button>
+      >
+        <span aria-hidden="true">▣</span>
+        <span className="focas-ctl-label focas-ctl-label-wide">{pip.busy ? '…' : pip.active ? 'Pop-out on' : 'Pop out'}</span>
+      </button>
       {pip.autoSupported && (
         <button
+          type="button"
+          className="lk-button"
           onClick={toggleAutoPip}
+          aria-pressed={!!autoPip}
           title={!autoPip
             ? 'Auto pop-out is OFF. Click to have the class float by itself whenever you switch to another tab (https site, with your mic or camera on).'
             : autoBlockedBy === 'https'
@@ -207,14 +240,11 @@ function LiveRoomInner({
                 : 'Auto pop-out is ON: the class floats by itself when you switch to another tab and goes back when you return. '
                   + 'The first time, Chrome may ask you to allow it; if it never floats, allow "Automatic picture-in-picture" in the site settings (🔒 in the address bar). Click to turn off.'}
           style={{
-            background: !autoPip ? 'rgba(0,0,0,0.55)' : autoBlockedBy ? '#b45309' : '#0d9488',
+            backgroundColor: !autoPip ? undefined : autoBlockedBy ? '#b45309' : '#0d9488',
             color: autoPip ? '#fff' : '#5eead4',
-            // Longhands only — React warns when a shorthand (border) and a
-            // longhand (borderLeft) on the same element change together.
-            borderStyle: 'solid', borderWidth: '1px 1px 1px 0',
-            borderColor: !autoPip ? 'rgba(255,255,255,0.18)' : autoBlockedBy ? '#f59e0b' : '#14b8a6',
-            fontSize: 11, fontWeight: 700, padding: '4px 8px', borderRadius: '0 8px 8px 0',
-            cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+            borderRadius: '0 var(--lk-border-radius) var(--lk-border-radius) 0',
+            borderLeft: '1px solid rgba(255,255,255,0.12)',
+            fontSize: '0.85em', fontWeight: 700,
           }}
         >Auto{!autoPip ? '' : autoBlockedBy === 'https' ? ' · https only' : autoBlockedBy === 'media' ? ' · mic off' : ' ✓'}</button>
       )}
@@ -239,13 +269,13 @@ function LiveRoomInner({
     </div>,
     document.body,
   )
-  // Hosts get an "are you sure" on LiveKit's Leave button — one mis-click would
-  // drop the session, and an empty room ends the class shortly after. Caught in
-  // the capture phase so we can veto the click before LiveKit disconnects.
+  // Hosts get an "are you sure" on LiveKit's Leave button — one mis-click drops
+  // them out of the session (the class itself stays live until they press End).
+  // Caught in the capture phase so we can veto the click before LiveKit disconnects.
   const guardLeave = (e) => {
     if (!canHost) return
     const leaveBtn = e.target.closest?.('.lk-disconnect-button')
-    if (leaveBtn && !window.confirm('Leave this class session? If nobody stays in the room, the class will end for everyone.')) {
+    if (leaveBtn && !window.confirm('Leave this class session? The class stays live until you press End, so you can come back any time. Students who stay connected will wait for you.')) {
       e.preventDefault()
       e.stopPropagation()
     }
@@ -264,6 +294,90 @@ function LiveRoomInner({
         boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
       }
     : { position: 'fixed', inset: 0, zIndex: 50, background: '#0b0b0f' }
+
+  // Student controls — raise a hand, hand work in without leaving the class.
+  // They sit in the bottom control bar beside Chat and Leave (ClassStage lays
+  // them out), NOT floating over the stage: the top-right corner is where every
+  // tile keeps its expand/focus toggle, and the shared screen's was unreachable
+  // underneath them. LiveKit's own button class keeps them looking native; the
+  // active states (work submitted, hand up) override its background.
+  const studentControls = (onRaiseHand || submitClass) ? (
+    <>
+      {submitClass && (
+        <button
+          type="button"
+          className="lk-button"
+          onClick={() => setSubmitOpen(true)}
+          title="Submit a voice note, video, PDF or photo of your work to your mentor"
+          aria-label={submittedCount ? `Submitted ${submittedCount} — open submissions` : 'Submit work'}
+          style={submittedCount ? { backgroundColor: '#0d9488', color: '#fff' } : undefined}
+        >
+          <span aria-hidden="true">📎</span>
+          <span className="focas-ctl-label">{submittedCount ? `Submitted ${submittedCount}` : 'Submit work'}</span>
+        </button>
+      )}
+      {onRaiseHand && (
+        <button
+          type="button"
+          className="lk-button"
+          onClick={onRaiseHand}
+          aria-pressed={!!handRaised}
+          title={handRaised ? 'Lower your hand' : 'Raise your hand — the mentor gets notified'}
+          aria-label={handRaised ? 'Lower your hand' : 'Raise your hand'}
+          style={handRaised ? { backgroundColor: '#ca8a04', color: '#fff' } : undefined}
+        >
+          <span aria-hidden="true">🖐</span>
+          <span className="focas-ctl-label">{handRaised ? 'Hand raised' : 'Raise hand'}</span>
+        </button>
+      )}
+    </>
+  ) : null
+
+  // Host controls — everything that used to float over the stage: Pop out /
+  // Auto, the participants drawer, and the track switcher. Same bar, same look.
+  const hostControls = canHost ? (
+    <>
+      {pipButton}
+      {timerClassId && (
+        <ParticipantsButton open={participantsOpen} onClick={() => setParticipantsOpen((v) => !v)} />
+      )}
+      {onSwitchTrack && (
+        <TrackSwitcher
+          tracks={tracks || []}
+          activeClassId={activeClassId}
+          onSwitchTrack={onSwitchTrack}
+          switching={switching}
+          mirrors={mirrors || []}
+          onToggleMirror={onToggleMirror}
+        />
+      )}
+    </>
+  ) : null
+
+  // Everything in the bar after LiveKit's own buttons. The timer is mounted
+  // here even while minimized (the row is only CSS-hidden) so the countdown
+  // keeps ticking and the chime still fires.
+  const barControls = (studentControls || hostControls || onToggleMinimize || timerClassId) ? (
+    <>
+      {studentControls}
+      {onToggleMinimize && (
+        <button
+          type="button"
+          className="lk-button"
+          onClick={onToggleMinimize}
+          title="Minimize — the class keeps running in a small window while you use the page behind it (e.g. review submissions)"
+          aria-label="Minimize the class to a small window"
+        >
+          <span aria-hidden="true">⧉</span>
+          <span className="focas-ctl-label focas-ctl-label-wide">Minimize</span>
+        </button>
+      )}
+      {hostControls}
+      {timerClassId && (
+        <ClassTimer classId={timerClassId} canHost={!!canHost} minimized={!!minimized} onStateChange={setTimerState} />
+      )}
+    </>
+  ) : null
 
   return (
     <div ref={shellRef} className={minimized ? 'focas-live focas-pip' : 'focas-live'} style={shellStyle} onClickCapture={guardLeave}>
@@ -325,57 +439,31 @@ function LiveRoomInner({
           </div>
         )}
 
-        {!minimized && (title || onToggleMinimize || canHost) && (
+        {/* The only thing left over the stage: a non-interactive title label.
+            Every button lives in the bottom bar (barControls) so nothing
+            covers the tiles' own expand/focus controls. */}
+        {!minimized && title && (
           <div style={{
-            position: 'absolute', top: 8, left: 8, zIndex: 20,
-            display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '55vw',
+            position: 'absolute', top: 8, left: 8, zIndex: 20, maxWidth: '55vw',
+            background: 'rgba(0,0,0,0.55)', color: '#fff', fontSize: 12, fontWeight: 600,
+            padding: '4px 10px', borderRadius: 8, pointerEvents: 'none',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
-            {title && (
-              <div style={{
-                background: 'rgba(0,0,0,0.55)', color: '#fff', fontSize: 12, fontWeight: 600,
-                padding: '4px 10px', borderRadius: 8, pointerEvents: 'none',
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}>
-                🔴 {title}{subtitle ? ` · ${subtitle}` : ''}
-              </div>
-            )}
-            {onToggleMinimize && (
-              <button
-                onClick={onToggleMinimize}
-                title="Minimize — the class keeps running in a small window while you use the page behind it (e.g. review submissions)"
-                style={{
-                  background: 'rgba(0,0,0,0.55)', color: '#fff',
-                  border: '1px solid rgba(255,255,255,0.18)',
-                  fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 8,
-                  cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
-                }}
-              >⧉ Minimize</button>
-            )}
-            {pipButton}
-            {canHost && timerClassId && (
-              <ParticipantsButton open={participantsOpen} onClick={() => setParticipantsOpen((v) => !v)} />
-            )}
+            🔴 {title}{subtitle ? ` · ${subtitle}` : ''}
           </div>
         )}
 
-        {!minimized && onSwitchTrack && (
-          <TrackSwitcher
-            tracks={tracks || []}
-            activeClassId={activeClassId}
-            onSwitchTrack={onSwitchTrack}
-            switching={switching}
-            mirrors={mirrors || []}
-            onToggleMirror={onToggleMirror}
-          />
-        )}
+        {/* The class stays live while the mentor is out of the room — say so,
+            rather than leaving students staring at an empty stage. */}
+        {!minimized && !canHost && hostIdentity && <WaitingForHost hostIdentity={hostIdentity} />}
 
         {/* Errors and toasts have to surface in here — the page behind the room
             is not visible while in a class. Stacked so both can show at once.
             (While minimized the page IS visible and shows them itself.)
-            Below the timer chip's row (44) so a toast never covers the countdown. */}
+            Top-right is free now that every control sits in the bottom bar. */}
         {!minimized && (notice || toast || pip.error || autoHint) && (
           <div style={{
-            position: 'absolute', top: 84, right: 8, zIndex: 21,
+            position: 'absolute', top: 8, right: 8, zIndex: 21,
             display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4,
             maxWidth: '52vw',
           }}>
@@ -440,47 +528,6 @@ function LiveRoomInner({
           </div>
         )}
 
-        {/* Student controls, stacked top-right so they never overlap each other:
-            raise a hand, and hand work in without leaving the class. */}
-        {!minimized && (onRaiseHand || submitClass) && (
-          <div style={{
-            position: 'absolute', top: 8, right: 8, zIndex: 20,
-            display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end',
-            maxWidth: '70vw',
-          }}>
-            {submitClass && (
-              <button
-                onClick={() => setSubmitOpen(true)}
-                title="Submit a voice note, video, PDF or photo of your work to your mentor"
-                style={{
-                  background: submittedCount ? '#0d9488' : 'rgba(0,0,0,0.55)',
-                  color: '#fff',
-                  border: `1px solid ${submittedCount ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
-                  fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
-                  cursor: 'pointer', whiteSpace: 'nowrap',
-                }}
-              >
-                📎 {submittedCount ? `Submitted ${submittedCount}` : 'Submit work'}
-              </button>
-            )}
-            {onRaiseHand && (
-              <button
-                onClick={onRaiseHand}
-                title={handRaised ? 'Lower your hand' : 'Raise your hand — the mentor gets notified'}
-                style={{
-                  background: handRaised ? '#ca8a04' : 'rgba(0,0,0,0.55)',
-                  color: '#fff',
-                  border: `1px solid ${handRaised ? '#facc15' : 'rgba(255,255,255,0.18)'}`,
-                  fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
-                  cursor: 'pointer', whiteSpace: 'nowrap',
-                }}
-              >
-                🖐 {handRaised ? 'Hand raised' : 'Raise hand'}
-              </button>
-            )}
-          </div>
-        )}
-
         {submitClass && submitOpen && (
           <SubmitOverlay
             classId={submitClass.id}
@@ -526,13 +573,9 @@ function LiveRoomInner({
           />
         )}
 
-        {/* Mounted even while minimized so the countdown keeps ticking and the
-            chime still fires — only its visuals hide in the tiny window. */}
-        {timerClassId && (
-          <ClassTimer classId={timerClassId} canHost={!!canHost} minimized={!!minimized} onStateChange={setTimerState} />
-        )}
-
-        <ClassStage compact={!!minimized} />
+        {/* The stage plus the bottom bar; every in-class control we add lives
+            in that bar (barControls above), never floating over the tiles. */}
+        <ClassStage compact={!!minimized} extraControls={barControls} />
       </LiveKitRoom>
     </div>
   )
@@ -736,30 +779,29 @@ function ClassTimer({ classId, canHost, minimized, onStateChange }) {
   const urgent = active && remaining <= 10_000
 
   const chipStyle = {
-    display: 'flex', alignItems: 'center', gap: 6,
-    background: urgent ? 'rgba(153,27,27,0.92)' : 'rgba(0,0,0,0.62)',
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+    background: urgent ? 'rgba(153,27,27,0.92)' : 'var(--lk-control-bg)',
     color: '#fff',
     border: `1px solid ${urgent ? '#f87171' : 'rgba(255,255,255,0.22)'}`,
-    fontSize: 13, fontWeight: 700, padding: '5px 12px', borderRadius: 999,
+    fontSize: 14, fontWeight: 700, padding: '0.5rem 0.875rem', borderRadius: 999,
     whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
   }
 
   return (
     <>
-      {/* Right side, second row — directly under the track switcher (hosts) or
-          the submit/hand buttons (students), clear of both. */}
+      {/* Lives in the bottom control bar (rendered through ClassStage's
+          extraControls); the set-up panel pops UP over the stage from here. */}
       {(active || canHost) && (
-        <div style={{
-          position: 'absolute', top: 44, right: 8,
-          zIndex: 22, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6,
-        }}>
+        <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
           {active ? (
             <div style={chipStyle} className={urgent ? 'animate-pulse' : undefined}>
               <span>⏱ {fmtCountdown(remaining)}</span>
               {canHost && (
                 <button
+                  type="button"
                   onClick={cancelTimer}
                   title="Cancel the timer"
+                  aria-label="Cancel the timer"
                   style={{
                     background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
                     fontSize: 15, lineHeight: 1, cursor: 'pointer', padding: '0 0 0 2px',
@@ -769,20 +811,22 @@ function ClassTimer({ classId, canHost, minimized, onStateChange }) {
             </div>
           ) : (
             <button
+              type="button"
+              className="lk-button"
               onClick={() => { setPanelOpen((v) => !v); setError('') }}
+              aria-pressed={panelOpen}
               title="Set a countdown everyone in this room can see — a chime sounds when it ends"
-              style={{
-                background: panelOpen ? '#0d9488' : 'rgba(0,0,0,0.55)', color: '#fff',
-                border: `1px solid ${panelOpen ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
-                fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
-                cursor: 'pointer', whiteSpace: 'nowrap',
-              }}
-            >⏱ Timer</button>
+              style={panelOpen ? { backgroundColor: '#0d9488', color: '#fff' } : undefined}
+            >
+              <span aria-hidden="true">⏱</span>
+              <span className="focas-ctl-label focas-ctl-label-wide">Timer</span>
+            </button>
           )}
 
           {panelOpen && !active && canHost && (
             <div style={{
-              background: 'rgba(17,17,22,0.95)', border: '1px solid rgba(255,255,255,0.18)',
+              position: 'absolute', bottom: 'calc(100% + 10px)', right: 0, zIndex: 30,
+              background: 'rgba(17,17,22,0.97)', border: '1px solid rgba(255,255,255,0.18)',
               borderRadius: 12, padding: 12, width: 220,
               boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
             }}>
@@ -834,17 +878,19 @@ function ClassTimer({ classId, canHost, minimized, onStateChange }) {
               {error && <p style={{ color: '#f87171', fontSize: 11, margin: '8px 0 0' }}>{error}</p>}
             </div>
           )}
-        </div>
+        </span>
       )}
 
       {/* Everyone in the room gets this the moment their countdown hits zero.
-          Above the submit overlay (40) so it's seen mid-upload too; click
-          anywhere to dismiss early. */}
-      {timesUp && (
+          Portaled to the body, fixed over the whole room, so it covers the
+          stage regardless of the bar's stacking — and sits above the
+          full-screen shell (50) and the submit overlay; click anywhere to
+          dismiss early. */}
+      {timesUp && createPortal(
         <div
           onClick={() => { clearTimeout(timesUpRef.current); setTimesUp(false) }}
           style={{
-            position: 'absolute', inset: 0, zIndex: 45,
+            position: 'fixed', inset: 0, zIndex: 56,
             background: 'rgba(0,0,0,0.55)', display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center', gap: 10, cursor: 'pointer',
           }}
@@ -852,7 +898,8 @@ function ClassTimer({ classId, canHost, minimized, onStateChange }) {
           <div style={{ fontSize: 64, lineHeight: 1 }}>⏰</div>
           <div style={{ color: '#fff', fontSize: 28, fontWeight: 800 }}>Time's up!</div>
           <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12 }}>tap to dismiss</div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   )
@@ -925,6 +972,31 @@ function LocalMediaProbe({ onChange, onMicControl, onPlaying, keepAlive }) {
   )
 }
 
+// Students in a class whose host has stepped out (a class stays live until the
+// host presses End) get told so. Identity = user id, which the join-token
+// response carries as hostUserId. A short delay covers the participant list
+// syncing right after connect, so it never flashes on a normal join.
+function WaitingForHost({ hostIdentity }) {
+  const remote = useRemoteParticipants()
+  const hostHere = remote.some((p) => p.identity === hostIdentity)
+  const [settled, setSettled] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(true), 3000)
+    return () => clearTimeout(t)
+  }, [])
+  if (!settled || hostHere) return null
+  return (
+    <div role="status" style={{
+      position: 'absolute', top: 48, left: '50%', transform: 'translateX(-50%)', zIndex: 21,
+      background: 'rgba(0,0,0,0.7)', color: '#fde68a', fontSize: 13, fontWeight: 600,
+      padding: '8px 14px', borderRadius: 10, border: '1px solid rgba(250,204,21,0.45)',
+      whiteSpace: 'nowrap', maxWidth: '90vw', overflow: 'hidden', textOverflow: 'ellipsis',
+    }}>
+      ⏳ Waiting for the mentor to join…
+    </div>
+  )
+}
+
 // 👥 toggle for the host's participants drawer, with a live student count.
 // Inside <LiveKitRoom> so it can read the room.
 function ParticipantsButton({ open, onClick }) {
@@ -933,16 +1005,16 @@ function ParticipantsButton({ open, onClick }) {
   const count = remote.filter((p) => p.kind === ParticipantKind.STANDARD && p.identity !== localParticipant?.identity).length
   return (
     <button
+      type="button"
+      className="lk-button"
       onClick={onClick}
       title={open ? 'Close the participants panel' : 'Participants — mute, stop video, ask to unmute, lock or remove students'}
+      aria-label={`Participants: ${count}`}
       aria-pressed={open}
-      style={{
-        background: open ? '#0d9488' : 'rgba(0,0,0,0.55)', color: '#fff',
-        border: `1px solid ${open ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
-        fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 8,
-        cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
-      }}
-    >👥 {count}</button>
+      style={open ? { backgroundColor: '#0d9488', color: '#fff' } : undefined}
+    >
+      <span aria-hidden="true">👥</span>{count}
+    </button>
   )
 }
 
@@ -959,10 +1031,11 @@ function NotifyListener({ onEvent }) {
   return null
 }
 
-// Host-only overlay for hopping between tracks. Every track in the topology is
-// shown, not just the busy ones — a host can open a free track too, and hiding
-// them would make switching look unavailable. Sits top-right, clear of the title
-// chip and the bottom control bar.
+// Host-only switcher for hopping between the tracks of this room. Every track
+// is shown, not just the busy ones — a host can open a free track too, and
+// hiding them would make switching look unavailable. Sits in the bottom
+// control bar (via ClassStage's extraControls), styled like LiveKit's buttons.
+// The room is in the title label, so the chips carry the track name only.
 const STATE_DOT = {
   live:      '#f87171',   // running now
   scheduled: '#facc15',   // booked and due — entering starts it
@@ -974,15 +1047,10 @@ function TrackSwitcher({ tracks, activeClassId, onSwitchTrack, switching, mirror
   if (tracks.length < 2) return null
 
   return (
-    <div style={{
-      position: 'absolute', top: 8, right: 8, zIndex: 20,
-      display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 4,
-      maxWidth: '52vw',
-    }}>
+    <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
       {tracks.map((t) => {
         const active = !!t.classId && t.classId === activeClassId
         const blocked = t.state === 'busy' || t.state === 'idle'
-        const disabled = active || blocked || !!switching
         const hint = active ? 'You are here'
           : t.state === 'busy' ? `Hosted by ${t.hostName || 'another host'}`
           : t.state === 'idle' ? 'Nothing scheduled here'
@@ -994,30 +1062,31 @@ function TrackSwitcher({ tracks, activeClassId, onSwitchTrack, switching, mirror
         const canMirror = !!onToggleMirror && !active && t.state !== 'busy' && t.state !== 'idle'
         return (
           <span key={`${t.roomKey}/${t.trackKey}`} style={{ display: 'inline-flex' }}>
+            {/* The current track stays enabled (so it isn't dimmed) but inert. */}
             <button
-              onClick={() => !disabled && onSwitchTrack(t)}
-              disabled={disabled}
+              type="button"
+              className="lk-button"
+              onClick={() => !active && !blocked && !switching && onSwitchTrack(t)}
+              disabled={blocked || !!switching}
+              aria-current={active ? 'true' : undefined}
               title={`${t.roomLabel} · ${t.trackLabel}${hint ? ` — ${hint}` : ''}`}
               style={{
-                background: active ? '#0d9488' : 'rgba(0,0,0,0.55)',
-                color: blocked ? 'rgba(255,255,255,0.45)' : '#fff',
-                border: `1px solid ${active ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
-                fontSize: 11, fontWeight: 600, padding: '5px 10px',
-                borderRadius: canMirror ? '8px 0 0 8px' : 8,
-                cursor: disabled ? 'default' : 'pointer',
+                backgroundColor: active ? '#0d9488' : undefined,
+                color: active ? '#fff' : blocked ? 'rgba(255,255,255,0.45)' : undefined,
+                borderRadius: canMirror ? 'var(--lk-border-radius) 0 0 var(--lk-border-radius)' : undefined,
                 opacity: switching && !active ? 0.5 : 1,
-                whiteSpace: 'nowrap',
+                cursor: active ? 'default' : undefined,
               }}
             >
               {!active && (
-                <span style={{ color: STATE_DOT[t.state] || '#9ca3af', marginRight: 5 }}>●</span>
+                <span aria-hidden="true" style={{ color: STATE_DOT[t.state] || '#9ca3af', fontSize: 10 }}>●</span>
               )}
-              {t.roomLabel} · {t.trackLabel}
+              {t.trackLabel}
               {/* Students with a hand up in this track — live via data push,
                   refreshed by the 20s poll. */}
               {t.handsRaised > 0 && (
                 <span style={{
-                  marginLeft: 6, background: '#ca8a04', color: '#fff',
+                  background: '#ca8a04', color: '#fff',
                   fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 999,
                 }}>
                   🖐 {t.handsRaised}
@@ -1028,24 +1097,26 @@ function TrackSwitcher({ tracks, activeClassId, onSwitchTrack, switching, mirror
                 the current one. Solid teal while the mirror is running. */}
             {canMirror && (
               <button
+                type="button"
+                className="lk-button"
                 onClick={() => !switching && onToggleMirror(t)}
                 disabled={!!switching}
+                aria-pressed={mirrorOn}
                 title={mirrorOn
                   ? `Stop broadcasting into ${t.roomLabel} · ${t.trackLabel}`
                   : `Broadcast your camera & mic into ${t.roomLabel} · ${t.trackLabel} (one-way — you won't see or hear them)`}
                 style={{
-                  background: mirrorOn ? '#0d9488' : 'rgba(0,0,0,0.55)',
+                  backgroundColor: mirrorOn ? '#0d9488' : undefined,
                   color: mirrorOn ? '#fff' : '#5eead4',
-                  border: `1px solid ${mirrorOn ? '#14b8a6' : 'rgba(255,255,255,0.18)'}`,
-                  borderLeft: 'none',
-                  fontSize: 11, fontWeight: 700, padding: '5px 8px', borderRadius: '0 8px 8px 0',
-                  cursor: switching ? 'default' : 'pointer', whiteSpace: 'nowrap',
+                  borderRadius: '0 var(--lk-border-radius) var(--lk-border-radius) 0',
+                  borderLeft: '1px solid rgba(255,255,255,0.12)',
+                  paddingLeft: '0.6rem', paddingRight: '0.6rem',
                 }}
               >📡</button>
             )}
           </span>
         )
       })}
-    </div>
+    </span>
   )
 }

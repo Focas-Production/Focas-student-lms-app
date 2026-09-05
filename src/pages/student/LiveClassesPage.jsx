@@ -16,6 +16,44 @@ function fmtWhen(d) {
   })
 }
 
+// The buttons a student gets for one class — the list cards and every calendar
+// surface (live strip, agenda rows, detail modal) render this same component,
+// so "can I join this right now" is decided in exactly one place.
+//   compact     smaller buttons for calendar rows
+//   placeholder show a "Not started" pill for upcoming classes (list cards only —
+//               the calendar modal already shows a countdown)
+function StudentClassActions({ cls, joining, onJoin, onSubmit, compact = false, placeholder = false }) {
+  const live = cls.status === 'live'
+  const scheduled = cls.status === 'scheduled'
+  const showPlaceholder = placeholder && scheduled && !live
+  if (!live && !cls.submissionOpen && !showPlaceholder) return null
+
+  const size = compact ? 'px-3 py-1.5 text-xs' : 'px-4 py-2.5 text-sm'
+  const grow = compact ? '' : 'flex-1 sm:flex-none'
+  return (
+    <>
+      {/* Hand work in without rejoining — the class stays here for the whole
+          submission window after it ends. */}
+      {cls.submissionOpen && (
+        <button onClick={() => onSubmit(cls)}
+          className={`${grow} ${size} rounded-xl border border-teal-300 text-teal-700 font-semibold hover:bg-teal-50 whitespace-nowrap`}>
+          📎 Submit{compact ? '' : ' work'}
+        </button>
+      )}
+      {live ? (
+        <button onClick={() => onJoin(cls)} disabled={joining === cls._id}
+          className={`${grow} ${size} rounded-xl bg-red-600 text-white font-semibold hover:bg-red-700 disabled:bg-gray-200 disabled:text-gray-400 whitespace-nowrap`}>
+          {joining === cls._id ? 'Joining…' : 'Join now'}
+        </button>
+      ) : showPlaceholder ? (
+        <span className={`${grow} ${size} text-center rounded-xl bg-gray-100 text-gray-400 font-semibold whitespace-nowrap`}>
+          Not started
+        </span>
+      ) : null}
+    </>
+  )
+}
+
 export default function LiveClassesPage() {
   const [classes, setClasses] = useState(null)
   const [session, setSession] = useState(null)   // { classId, token, wsUrl, title } while in a room
@@ -54,6 +92,7 @@ export default function LiveClassesPage() {
         wsUrl: d.wsUrl,
         title: d.liveClass?.title || cls.title,
         subtitle: [d.liveClass?.roomLabel, d.liveClass?.trackLabel].filter(Boolean).join(' · '),
+        hostUserId: d.liveClass?.hostUserId || '',
       })
     } catch (e) {
       setError(e.message || 'Could not join the class')
@@ -90,6 +129,7 @@ export default function LiveClassesPage() {
           token={session.token}
           wsUrl={session.wsUrl}
           canHost={false}
+          hostIdentity={session.hostUserId}
           title={session.title}
           subtitle={session.subtitle}
           onRaiseHand={toggleHand}
@@ -105,8 +145,8 @@ export default function LiveClassesPage() {
     <div className="p-4 md:p-6 max-w-4xl mx-auto">
       <div className="mb-5 flex items-end justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl md:text-2xl font-bold text-gray-900">Live Classes</h1>
-          <p className="text-gray-400 text-sm mt-1">Join your live sessions with mentors. Classes appear here once scheduled.</p>
+          <h1 className="text-xl md:text-2xl font-bold text-gray-900">Tutor Session</h1>
+          <p className="text-gray-400 text-sm mt-1">Join your live sessions with tutors. Sessions appear here once scheduled.</p>
         </div>
         <div className="flex rounded-xl border border-gray-200 overflow-hidden text-xs font-semibold bg-white">
           {[['list', 'List'], ['calendar', 'Calendar']].map(([key, label]) => (
@@ -121,13 +161,20 @@ export default function LiveClassesPage() {
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
 
       {tab === 'calendar' ? (
-        <ScheduleCalendar endpoint="/api/live-classes/schedule" />
+        <ScheduleCalendar
+          endpoint="/api/live-classes/schedule"
+          renderActions={(c, { compact, close }) => (
+            <StudentClassActions cls={c} joining={joining} compact={compact}
+              onJoin={(cls) => { close(); join(cls) }}
+              onSubmit={(cls) => { close(); setSubmitFor({ id: cls._id, title: cls.title }) }} />
+          )}
+        />
       ) : classes === null ? (
         <div className="bg-white rounded-2xl p-8 text-center text-gray-400 text-sm">Loading…</div>
       ) : !classes.length ? (
         <div className="bg-white rounded-2xl p-8 text-center">
-          <p className="text-gray-700 font-semibold mb-1">No live classes scheduled</p>
-          <p className="text-gray-400 text-sm">When a mentor schedules a class, it'll show up here.</p>
+          <p className="text-gray-700 font-semibold mb-1">No tutor sessions scheduled</p>
+          <p className="text-gray-400 text-sm">When a tutor schedules a session, it'll show up here.</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -162,24 +209,9 @@ export default function LiveClassesPage() {
                 </div>
 
                 <div className="flex gap-2 flex-shrink-0 w-full sm:w-auto">
-                  {/* Hand work in without rejoining — the class stays here for
-                      the whole submission window after it ends. */}
-                  {c.submissionOpen && (
-                    <button onClick={() => setSubmitFor({ id: c._id, title: c.title })}
-                      className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-teal-300 text-teal-700 text-sm font-semibold hover:bg-teal-50 whitespace-nowrap">
-                      📎 Submit work
-                    </button>
-                  )}
-                  {live ? (
-                    <button onClick={() => join(c)} disabled={joining === c._id}
-                      className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:bg-gray-200 disabled:text-gray-400 whitespace-nowrap">
-                      {joining === c._id ? 'Joining…' : 'Join now'}
-                    </button>
-                  ) : !ended ? (
-                    <span className="flex-1 sm:flex-none text-center px-4 py-2.5 rounded-xl bg-gray-100 text-gray-400 text-sm font-semibold whitespace-nowrap">
-                      Not started
-                    </span>
-                  ) : null}
+                  <StudentClassActions cls={c} joining={joining} placeholder
+                    onJoin={join}
+                    onSubmit={(cls) => setSubmitFor({ id: cls._id, title: cls.title })} />
                 </div>
               </div>
             )

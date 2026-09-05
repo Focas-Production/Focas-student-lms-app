@@ -25,7 +25,12 @@ import {
 //           (small windows, very wide shares)
 //   solo  — just the share (the minimized corner window)
 // Grid mode (nobody focused) is LiveKit's own auto-grid, unchanged.
-export default function ClassStage({ compact = false }) {
+//
+// extraControls — the caller's own buttons for the bottom control bar, laid
+// out in the same row as LiveKit's (mic, camera, share, chat, leave). Anything
+// a participant acts on during class belongs down here, not floating over the
+// stage where it covers the tiles' own controls.
+export default function ClassStage({ compact = false, extraControls = null }) {
   const [widgetState, setWidgetState] = useState({ showChat: false, unreadMessages: 0, showSettings: false })
   const lastAutoFocused = useRef(null)
   const tracks = useTracks(
@@ -72,7 +77,11 @@ export default function ClassStage({ compact = false }) {
               <GridLayout tracks={tracks}><ParticipantTile /></GridLayout>
             </div>
           )}
-          <ControlBar controls={{ chat: true, settings: false }} />
+          {/* One row: LiveKit's bar plus the caller's buttons (styles in LiveRoom's LIVE_LAYOUT_CSS) */}
+          <div className="focas-control-row">
+            <ControlBar controls={{ chat: true, settings: false }} />
+            {extraControls && <div className="focas-extra-controls">{extraControls}</div>}
+          </div>
         </div>
         <Chat style={{ display: widgetState.showChat ? 'grid' : 'none' }} />
       </LayoutContextProvider>
