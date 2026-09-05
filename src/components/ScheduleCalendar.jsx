@@ -628,10 +628,11 @@ export default function ScheduleCalendar({ endpoint, renderActions, refreshKey, 
               return (
                 <div key={c._id} className="flex items-center gap-2 sm:gap-3 bg-white border border-red-100 rounded-lg pl-3 pr-2 py-2">
                   <button onClick={() => setDetailId(c._id)} className="min-w-0 flex-1 text-left">
-                    <p className="text-sm font-semibold text-gray-900 truncate">{c.title}</p>
-                    <p className="text-xs text-gray-500 truncate">
-                      {[`${fmtTime(c.scheduledStart)} – ${fmtTime(c.scheduledEnd)}`, metaLine(c)].filter(Boolean).join(' · ')}
+                    {/* One bold line: date, time, then which slot it is */}
+                    <p className="text-sm font-bold text-gray-900">
+                      {fmtShortDate(c.scheduledStart)} · {fmtTime(c.scheduledStart)} – {fmtTime(c.scheduledEnd)} · {c.title}
                     </p>
+                    {metaLine(c) && <p className="text-xs text-gray-500 truncate">{metaLine(c)}</p>}
                   </button>
                   {actions && <div className="flex items-center gap-1.5 flex-shrink-0">{actions}</div>}
                 </div>

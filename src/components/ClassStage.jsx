@@ -1,10 +1,32 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { RoomEvent, Track } from 'livekit-client'
 import {
   CarouselLayout, Chat, ConnectionStateToast, ControlBar, FocusLayout, GridLayout,
   LayoutContextProvider, ParticipantTile, RoomAudioRenderer, TrackLoop,
-  isTrackReference, useCreateLayoutContext, usePinnedTracks, useTracks,
+  isTrackReference, useCreateLayoutContext, usePinnedTracks, useTrackRefContext, useTracks,
 } from '@livekit/components-react'
+
+// Identities with a hand up in this room, for the tiles. Provided by ClassStage
+// from the `hands` prop; the default (nobody) keeps a tile rendered outside a
+// stage badge-free. Module-private: only HandTile below reads it.
+const HandsContext = createContext(new Set())
+
+// LiveKit's tile with a raised hand laid over it. The wrapper — not the tile —
+// is the grid/carousel item (LiveKit sizes its children generically, see
+// .focas-tile in LiveRoom's CSS) and the tile fills it, so the layout is
+// exactly LiveKit's when nobody's hand is up. Only camera tiles get the badge;
+// a screen-share tile is the same person twice.
+function HandTile() {
+  const trackRef = useTrackRefContext()
+  const hands = useContext(HandsContext)
+  const up = trackRef?.source === Track.Source.Camera && hands.has(trackRef.participant?.identity)
+  return (
+    <div className="focas-tile" data-hand={up ? 'up' : undefined}>
+      <ParticipantTile />
+      {up && <div className="focas-hand-badge" title="Hand raised" aria-label="Hand raised">🖐</div>}
+    </div>
+  )
+}
 
 // The class stage — LiveKit's prebuilt <VideoConference> re-assembled from the
 // same primitives, with one difference: the FOCUS layout (someone is sharing
@@ -30,8 +52,11 @@ import {
 // out in the same row as LiveKit's (mic, camera, share, chat, leave). Anything
 // a participant acts on during class belongs down here, not floating over the
 // stage where it covers the tiles' own controls.
-export default function ClassStage({ compact = false, extraControls = null }) {
+// hands — [{ id, name }] students with a hand up in this room; each one's
+// camera tile wears a 🖐 badge until they lower it or leave.
+export default function ClassStage({ compact = false, extraControls = null, hands = [] }) {
   const [widgetState, setWidgetState] = useState({ showChat: false, unreadMessages: 0, showSettings: false })
+  const handSet = useMemo(() => new Set((hands || []).map((h) => String(h.id))), [hands])
   const lastAutoFocused = useRef(null)
   const tracks = useTracks(
     [
@@ -68,23 +93,25 @@ export default function ClassStage({ compact = false, extraControls = null }) {
 
   return (
     <div className="lk-video-conference">
-      <LayoutContextProvider value={layoutContext} onWidgetChange={setWidgetState}>
-        <div className="lk-video-conference-inner">
-          {focusTrack ? (
-            <FocusStage focusTrack={focusTrack} others={others} compact={compact} />
-          ) : (
-            <div className="lk-grid-layout-wrapper">
-              <GridLayout tracks={tracks}><ParticipantTile /></GridLayout>
+      <HandsContext.Provider value={handSet}>
+        <LayoutContextProvider value={layoutContext} onWidgetChange={setWidgetState}>
+          <div className="lk-video-conference-inner">
+            {focusTrack ? (
+              <FocusStage focusTrack={focusTrack} others={others} compact={compact} />
+            ) : (
+              <div className="lk-grid-layout-wrapper">
+                <GridLayout tracks={tracks}><HandTile /></GridLayout>
+              </div>
+            )}
+            {/* One row: LiveKit's bar plus the caller's buttons (styles in LiveRoom's LIVE_LAYOUT_CSS) */}
+            <div className="focas-control-row">
+              <ControlBar controls={{ chat: true, settings: false }} />
+              {extraControls && <div className="focas-extra-controls">{extraControls}</div>}
             </div>
-          )}
-          {/* One row: LiveKit's bar plus the caller's buttons (styles in LiveRoom's LIVE_LAYOUT_CSS) */}
-          <div className="focas-control-row">
-            <ControlBar controls={{ chat: true, settings: false }} />
-            {extraControls && <div className="focas-extra-controls">{extraControls}</div>}
           </div>
-        </div>
-        <Chat style={{ display: widgetState.showChat ? 'grid' : 'none' }} />
-      </LayoutContextProvider>
+          <Chat style={{ display: widgetState.showChat ? 'grid' : 'none' }} />
+        </LayoutContextProvider>
+      </HandsContext.Provider>
       <RoomAudioRenderer />
       <ConnectionStateToast />
     </div>
@@ -191,11 +218,11 @@ function FocusStage({ focusTrack, others, compact }) {
         </div>
         {mode === 'side' && (
           <div className="focas-side-grid" style={{ gridTemplateColumns: `repeat(${sideCols}, minmax(0, 1fr))` }}>
-            <TrackLoop tracks={others}><ParticipantTile /></TrackLoop>
+            <TrackLoop tracks={others}><HandTile /></TrackLoop>
           </div>
         )}
         {mode === 'strip' && (
-          <CarouselLayout tracks={others} orientation="horizontal"><ParticipantTile /></CarouselLayout>
+          <CarouselLayout tracks={others} orientation="horizontal"><HandTile /></CarouselLayout>
         )}
       </div>
     </div>

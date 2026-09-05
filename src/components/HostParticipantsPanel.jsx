@@ -23,13 +23,20 @@ import { NOTIFY_TOPIC, canPublishSource } from '../utils/livekitPermissions'
 // a student muted themselves. The persisted policy — fetched once, then kept
 // fresh by the server's "media-policy" pushes — only adds what LiveKit can't
 // know: the room-wide switches and who's been removed.
-export default function HostParticipantsPanel({ classId, onClose }) {
+// hands: [{ id, name }] — who has a hand up in this room (server's list, via
+// LiveRoom). Those rows float to the top and wear a 🖐, so the panel answers
+// "who wants to speak" as well as "who is here".
+export default function HostParticipantsPanel({ classId, hands = [], onClose }) {
   const { localParticipant } = useLocalParticipant()
   const remote = useRemoteParticipants()
+  const handOrder = new Map((hands || []).map((h, i) => [String(h.id), i]))
   // Students only: real people, not egress/agents, and not a mirrored copy of
-  // this host (ForwardParticipant keeps the host's identity).
-  const students = remote.filter((p) =>
-    p.kind === ParticipantKind.STANDARD && p.identity !== localParticipant?.identity)
+  // this host (ForwardParticipant keeps the host's identity). Hands up first,
+  // in the order they were raised; then everyone else as LiveKit lists them.
+  const students = remote
+    .filter((p) => p.kind === ParticipantKind.STANDARD && p.identity !== localParticipant?.identity)
+    .sort((a, b) => (handOrder.get(a.identity) ?? Infinity) - (handOrder.get(b.identity) ?? Infinity))
+  const handsUp = students.filter((p) => handOrder.has(p.identity)).length
 
   const [policy, setPolicy] = useState(null)
   const [busy, setBusy] = useState({})      // action key → true while in flight
@@ -135,6 +142,9 @@ export default function HostParticipantsPanel({ classId, onClose }) {
           <div style={{ fontSize: 14, fontWeight: 800 }}>Participants</div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)' }}>
             {students.length} student{students.length === 1 ? '' : 's'} in this room
+            {handsUp > 0 && (
+              <span style={{ color: '#fde68a', fontWeight: 700 }}>{' · '}🖐 {handsUp} hand{handsUp === 1 ? '' : 's'} up</span>
+            )}
             {(micLockedRoom || camLockedRoom) && (
               <span style={{ color: '#fca5a5', fontWeight: 700 }}>
                 {' · '}🔒 {[micLockedRoom && 'mic', camLockedRoom && 'video'].filter(Boolean).join(' & ')} locked
@@ -166,6 +176,7 @@ export default function HostParticipantsPanel({ classId, onClose }) {
           <StudentRow
             key={p.identity}
             p={p}
+            handUp={handOrder.has(p.identity)}
             busy={busy}
             menuOpen={menuFor === p.identity}
             onMenu={(open) => setMenuFor(open ? p.identity : null)}
@@ -250,7 +261,7 @@ export default function HostParticipantsPanel({ classId, onClose }) {
   )
 }
 
-function StudentRow({ p, busy, menuOpen, onMenu, onControl, onRemove }) {
+function StudentRow({ p, handUp, busy, menuOpen, onMenu, onControl, onRemove }) {
   const micMuted = useIsMuted({ participant: p, source: Track.Source.Microphone })
   const camMuted = useIsMuted({ participant: p, source: Track.Source.Camera })
   const perms = useParticipantPermissions({ participant: p })
@@ -275,10 +286,21 @@ function StudentRow({ p, busy, menuOpen, onMenu, onControl, onRemove }) {
       : { label: 'Ask for video', title: `Ask ${name} to turn their camera on`, action: 'ask', tone: 'ask' }
 
   return (
-    <div style={{ ...row, position: 'relative', borderColor: speaking ? 'rgba(20,184,166,0.6)' : 'rgba(255,255,255,0.06)' }}>
+    <div style={{
+      ...row, position: 'relative',
+      borderColor: handUp ? 'rgba(202,138,4,0.7)' : speaking ? 'rgba(20,184,166,0.6)' : 'rgba(255,255,255,0.06)',
+      background: handUp ? 'rgba(202,138,4,0.10)' : undefined,
+    }}>
       <Avatar name={name} speaking={speaking} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
+        <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+          {handUp && (
+            <span title="Hand raised" style={{ background: '#ca8a04', color: '#fff', fontSize: 10, fontWeight: 800, padding: '1px 7px', borderRadius: 999, flexShrink: 0 }}>
+              🖐 Hand up
+            </span>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: 8, fontSize: 11, color: 'rgba(255,255,255,0.55)', marginTop: 1 }}>
           <span title={micLocked ? 'Microphone locked by host' : micMuted ? 'Microphone off' : 'Microphone on'}
             style={{ color: micLocked ? '#fca5a5' : micMuted ? undefined : '#5eead4' }}>

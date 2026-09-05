@@ -36,8 +36,9 @@ const RANK = { live: 0, scheduled: 1, ended: 2, cancelled: 3 }
 const aggregateStatus = (classes) =>
   classes.reduce((best, c) => ((RANK[c.status] ?? 9) < (RANK[best] ?? 9) ? c.status : best), 'cancelled')
 
-// Admin titles are "Room 1 · Track 1 — Morning Slot 2": the part after the dash
-// is the period both tracks share. Anything else falls back to a plain count.
+// Admin titles are "Room 1 · Track 1 — 6–9 AM Slot" (older classes may still
+// say "— Morning Slot 2"): the part after the spaced em-dash is the period both
+// tracks share. Anything else falls back to a plain count.
 function slotTitle(roomLabel, classes) {
   const suffixes = classes.map((c) => {
     const i = (c.title || '').lastIndexOf(' — ')

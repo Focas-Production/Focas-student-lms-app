@@ -198,14 +198,16 @@ export default function LiveClassesPage() {
                     )}
                     {c.hostName && <span className="text-[11px] text-gray-400">with {c.hostName}</span>}
                   </div>
-                  <p className="text-sm font-semibold text-gray-900 truncate">{c.title}</p>
+                  {/* One bold line: when it runs, then which slot it is */}
+                  <p className="text-sm font-bold text-gray-900">
+                    {fmtWhen(c.scheduledStart)} · {c.title}
+                  </p>
                   {c.chapterName && (
                     <p className="text-xs text-indigo-500 truncate mt-0.5">
                       📖 {c.subjectName ? `${c.subjectName} · ` : ''}{c.chapterName}{c.unitName ? ` · ${c.unitName}` : ''}
                     </p>
                   )}
                   {c.description && <p className="text-xs text-gray-500 line-clamp-1 mt-0.5">{c.description}</p>}
-                  <p className="text-xs text-gray-400 mt-1">{fmtWhen(c.scheduledStart)}</p>
                 </div>
 
                 <div className="flex gap-2 flex-shrink-0 w-full sm:w-auto">

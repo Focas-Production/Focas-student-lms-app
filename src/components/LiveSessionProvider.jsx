@@ -102,10 +102,11 @@ export default function LiveSessionProvider({ children }) {
       return
     }
     if (p?.type !== 'hand') return
-    // The payload's count is authoritative (same store the 20s poll reads).
+    // The payload's count and name list are authoritative (same store the 20s
+    // poll reads) — the room shows who has a hand up from `hands`.
     setRoomTracks(ts => ts.map(t =>
       t.roomKey === p.roomKey && t.trackKey === p.trackKey
-        ? { ...t, handsRaised: p.count }
+        ? { ...t, handsRaised: p.count, hands: Array.isArray(p.hands) ? p.hands : (t.hands || []) }
         : t,
     ))
     if (p.raised) {

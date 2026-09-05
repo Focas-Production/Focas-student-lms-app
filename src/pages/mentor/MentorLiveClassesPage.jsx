@@ -534,13 +534,17 @@ export default function MentorLiveClassesPage() {
                         </span>
                       )}
                     </div>
-                    <p className="text-sm font-semibold text-gray-900 truncate">{s.title}</p>
-                    {only && <ClassMeta c={only} />}
-                    <p className="text-xs text-gray-400 mt-1">
-                      {fmtWhen(s.scheduledStart)}
-                      {only && runDuration(only) && <span className="text-gray-500"> · ran {runDuration(only)}</span>}
-                      {s.isGroup && <span className="text-gray-500"> · Start once, then switch tracks inside the room</span>}
+                    {/* One bold line: when it runs, then which slot it is */}
+                    <p className="text-sm font-bold text-gray-900">
+                      {fmtWhen(s.scheduledStart)} · {s.title}
                     </p>
+                    {only && <ClassMeta c={only} />}
+                    {((only && runDuration(only)) || s.isGroup) && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        {only && runDuration(only) && <span>ran {runDuration(only)}</span>}
+                        {s.isGroup && <span>Start once, then switch tracks inside the room</span>}
+                      </p>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">

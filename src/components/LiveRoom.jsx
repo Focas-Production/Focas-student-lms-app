@@ -22,8 +22,24 @@ const LIVE_LAYOUT_CSS = `
   display: grid; gap: var(--lk-grid-gap); align-content: start;
   min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden;
 }
-.focas-side-grid > .lk-participant-tile { aspect-ratio: 16 / 10; min-height: 0; }
+.focas-side-grid > * { aspect-ratio: 16 / 10; min-height: 0; }
 .focas-focus > .lk-carousel { height: 100%; }
+/* Each tile sits in a wrapper (ClassStage's HandTile) so a raised hand can be
+   laid over it; the wrapper is the grid/carousel item and the tile fills it. */
+.focas-tile { position: relative; display: grid; min-width: 0; min-height: 0; }
+.focas-tile > .lk-participant-tile { width: 100%; height: 100%; min-height: 0; }
+/* A raised hand marks the tile without covering the video: a thin amber frame
+   plus one small icon in the corner (hover it for the label). The names live
+   in the bottom bar's participants button. */
+.focas-tile[data-hand="up"] > .lk-participant-tile { box-shadow: inset 0 0 0 2px #ca8a04; }
+.focas-hand-badge {
+  position: absolute; top: 0.4rem; left: 0.4rem; z-index: 2;
+  width: 24px; height: 24px; display: grid; place-items: center;
+  background: #ca8a04; color: #fff; font-size: 13px; line-height: 1;
+  border-radius: 999px; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  animation: focas-hand-in 0.25s ease-out;
+}
+@keyframes focas-hand-in { from { transform: scale(0.6); opacity: 0; } to { transform: none; opacity: 1; } }
 .focas-pip .lk-control-bar, .focas-pip .focas-control-row, .focas-pip .lk-chat { display: none; }
 /* Bottom bar: LiveKit's control bar and our extra buttons share one row, so
    they read as one toolbar. Under 760px LiveKit drops its button labels for
@@ -31,8 +47,16 @@ const LIVE_LAYOUT_CSS = `
 .focas-control-row {
   display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
   border-top: 1px solid var(--lk-border-color);
+  flex: none;
 }
 .focas-control-row .lk-control-bar { border-top: 0; }
+/* LiveKit sizes the stage as "everything but one control-bar height", so a
+   bottom row that wraps to two lines — a full toolbar plus a raised-hand badge
+   on the track chip is enough — pushes its second line below the screen, and
+   the host "loses" Minimize, Pop out, the tracks and the timer. Let the stage
+   flex instead: the row takes the height it needs, the stage gives it up. */
+.focas-live .lk-grid-layout-wrapper,
+.focas-live .lk-focus-layout-wrapper { height: auto; flex: 1 1 0; min-height: 0; }
 .focas-extra-controls {
   display: flex; align-items: center; gap: 0.5rem;
   padding: 0.75rem 0.75rem 0.75rem 0; margin-left: -0.25rem;
@@ -196,7 +220,12 @@ function LiveRoomInner({
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [canHost, autoPip, autoBlockedBy, pip.active])
-  const handsRaised = (tracks || []).find((t) => t.classId && t.classId === activeClassId)?.handsRaised || 0
+  const activeTrack = (tracks || []).find((t) => t.classId && t.classId === activeClassId)
+  const handsRaised = activeTrack?.handsRaised || 0
+  // Who has a hand up in THIS room, oldest first — the server's list, pushed on
+  // every raise / lower / leave. Drives the tile badges, the persistent chip
+  // and the participants panel, so the mentor never depends on the 6-second toast.
+  const hands = activeTrack?.hands || []
   // The room timer's state, mirrored into the pop-out (ClassTimer owns it).
   const [timerState, setTimerState] = useState(null)
 
@@ -339,7 +368,7 @@ function LiveRoomInner({
     <>
       {pipButton}
       {timerClassId && (
-        <ParticipantsButton open={participantsOpen} onClick={() => setParticipantsOpen((v) => !v)} />
+        <ParticipantsButton open={participantsOpen} hands={hands} onClick={() => setParticipantsOpen((v) => !v)} />
       )}
       {onSwitchTrack && (
         <TrackSwitcher
@@ -543,7 +572,7 @@ function LiveRoomInner({
             prompts/explanations. Both need room context, hence in here. */}
         {!canHost && <StudentMediaGuard classId={timerClassId} />}
         {canHost && timerClassId && participantsOpen && !minimized && (
-          <HostParticipantsPanel classId={timerClassId} onClose={() => setParticipantsOpen(false)} />
+          <HostParticipantsPanel classId={timerClassId} hands={hands} onClose={() => setParticipantsOpen(false)} />
         )}
 
         {canHost && (
@@ -575,7 +604,7 @@ function LiveRoomInner({
 
         {/* The stage plus the bottom bar; every in-class control we add lives
             in that bar (barControls above), never floating over the tiles. */}
-        <ClassStage compact={!!minimized} extraControls={barControls} />
+        <ClassStage compact={!!minimized} extraControls={barControls} hands={canHost ? hands : []} />
       </LiveKitRoom>
     </div>
   )
@@ -999,21 +1028,36 @@ function WaitingForHost({ hostIdentity }) {
 
 // 👥 toggle for the host's participants drawer, with a live student count.
 // Inside <LiveKitRoom> so it can read the room.
-function ParticipantsButton({ open, onClick }) {
+// hands: who has a hand up right now. Their names ride on this button — in
+// the bottom bar, where nothing covers a video tile — and the panel it opens
+// lists them first. Two names inline, the rest as "+N"; the tooltip has all.
+function ParticipantsButton({ open, hands = [], onClick }) {
   const { localParticipant } = useLocalParticipant()
   const remote = useRemoteParticipants()
   const count = remote.filter((p) => p.kind === ParticipantKind.STANDARD && p.identity !== localParticipant?.identity).length
+  const names = hands.map((h) => h.name || 'A student')
+  const inline = names.slice(0, 2).join(', ') + (names.length > 2 ? ` +${names.length - 2}` : '')
+  const handsTitle = names.length ? `Hand up: ${names.join(', ')}. ` : ''
   return (
     <button
       type="button"
       className="lk-button"
       onClick={onClick}
-      title={open ? 'Close the participants panel' : 'Participants — mute, stop video, ask to unmute, lock or remove students'}
-      aria-label={`Participants: ${count}`}
+      title={handsTitle + (open ? 'Close the participants panel' : 'Participants — mute, stop video, ask to unmute, lock or remove students')}
+      aria-label={`Participants: ${count}${names.length ? `, hand up: ${names.join(', ')}` : ''}`}
       aria-pressed={open}
       style={open ? { backgroundColor: '#0d9488', color: '#fff' } : undefined}
     >
       <span aria-hidden="true">👥</span>{count}
+      {names.length > 0 && (
+        <span style={{
+          background: '#ca8a04', color: '#fff', fontSize: 10, fontWeight: 700,
+          padding: '1px 7px', borderRadius: 999, marginLeft: 4,
+          maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          🖐 {inline}
+        </span>
+      )}
     </button>
   )
 }
@@ -1085,10 +1129,13 @@ function TrackSwitcher({ tracks, activeClassId, onSwitchTrack, switching, mirror
               {/* Students with a hand up in this track — live via data push,
                   refreshed by the 20s poll. */}
               {t.handsRaised > 0 && (
-                <span style={{
-                  background: '#ca8a04', color: '#fff',
-                  fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 999,
-                }}>
+                <span
+                  title={(t.hands || []).length ? `Hand up: ${t.hands.map((h) => h.name).join(', ')}` : undefined}
+                  style={{
+                    background: '#ca8a04', color: '#fff',
+                    fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 999,
+                  }}
+                >
                   🖐 {t.handsRaised}
                 </span>
               )}
