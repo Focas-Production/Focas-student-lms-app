@@ -23,6 +23,7 @@ import MentorTestSeriesPage from '../pages/mentor/MentorTestSeriesPage'
 import MentorLiveClassesPage from '../pages/mentor/MentorLiveClassesPage'
 import MentorSubmissionsPage from '../pages/mentor/MentorSubmissionsPage'
 import MentorSyllabusPage from '../pages/mentor/MentorSyllabusPage'
+import MentorLibraryPage from '../pages/mentor/MentorLibraryPage'
 import TrackRoomPage from '../pages/TrackRoomPage'
 
 function RootRedirect() {
@@ -70,6 +71,7 @@ export default function AppRouter() {
         <Route path="submissions" element={<MentorSubmissionsPage />} />
         <Route path="syllabus" element={<MentorSyllabusPage />} />
         <Route path="test-series" element={<MentorTestSeriesPage />} />
+        <Route path="library" element={<MentorLibraryPage />} />
         <Route path="students" element={<MyStudentsPage />} />
         <Route path="profile"  element={<MentorProfilePage />} />
       </Route>
