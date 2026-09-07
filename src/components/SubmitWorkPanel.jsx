@@ -83,6 +83,24 @@ function typeOf(file) {
   return EXT_TYPE[ext] || ''
 }
 
+// A staged file can be renamed before it's sent. The extension is locked — the
+// name we store is also the download filename the mentor gets, so a student who
+// turns "IMG_2041.jpg" into "Q3 answer" must still hand over "Q3 answer.jpg".
+const MAX_BASENAME = 100
+function splitExt(name) {
+  const dot = (name || '').lastIndexOf('.')
+  return dot > 0 ? { base: name.slice(0, dot), ext: name.slice(dot) } : { base: name || '', ext: '' }
+}
+// Drops path separators and control characters — the name ends up in a
+// Content-Disposition header and in an R2 key, neither of which wants them.
+function cleanBasename(base) {
+  return Array.from(base || '')
+    .filter((ch) => ch !== '/' && ch !== '\\' && ch.charCodeAt(0) >= 32)
+    .join('')
+    .trim()
+    .slice(0, MAX_BASENAME)
+}
+
 const fmtBytes = (b) => {
   if (!b) return '0 KB'
   if (b < 1024 * 1024) return `${Math.max(1, Math.round(b / 1024))} KB`
@@ -120,7 +138,8 @@ export default function SubmitWorkPanel({
   classId, classTitle, embedded = false, onClose, onCountChange, cameraControls,
 }) {
   const [data, setData]       = useState(null)   // { submission, canSubmit, closedReason, work }
-  const [queue, setQueue]     = useState([])     // staged files not yet uploaded
+  const [queue, setQueue]     = useState([])     // staged files not yet uploaded; `name` is what we send, `file.name` is what the device gave us
+  const [renaming, setRenaming] = useState(-1)   // index of the staged file being renamed, -1 = none
   const [note, setNote]       = useState('')
   const [busy, setBusy]       = useState(false)
   const [progress, setProgress] = useState(null) // { index, total, pct, name }
@@ -198,7 +217,7 @@ export default function SubmitWorkPanel({
         setError(`${f.name} is ${fmtBytes(f.size)} — the limit for ${kind} files is ${Math.round(LIMITS[kind] / 1048576)}MB`)
         continue
       }
-      accepted.push({ file: f, kind, contentType: type, durationMs: 0, recorded: false })
+      accepted.push({ file: f, name: f.name, kind, contentType: type, durationMs: 0, recorded: false })
     }
     if (accepted.length) setQueue((q) => [...q, ...accepted])
   }
@@ -207,6 +226,7 @@ export default function SubmitWorkPanel({
     if (!slotsLeft) { setError(`You can attach at most ${MAX_FILES} files to a class`); return }
     setQueue((q) => [...q, {
       file: result.file,
+      name: result.file.name,
       kind: result.kind,
       contentType: (result.file.type || '').split(';')[0],
       durationMs: result.durationMs,
@@ -216,7 +236,19 @@ export default function SubmitWorkPanel({
     setTab('files')
   }
 
-  const removeStaged = (idx) => setQueue((q) => q.filter((_, i) => i !== idx))
+  const removeStaged = (idx) => {
+    setRenaming(-1)   // indexes shift; don't leave the editor pointing at the wrong row
+    setQueue((q) => q.filter((_, i) => i !== idx))
+  }
+
+  // Apply a new base name to a staged file. The extension comes from the
+  // current name so it can't be changed; an empty result keeps the old name.
+  const renameStaged = (idx, base) => {
+    setRenaming(-1)
+    const clean = cleanBasename(base)
+    if (!clean) return
+    setQueue((q) => q.map((item, i) => (i === idx ? { ...item, name: clean + splitExt(item.name).ext } : item)))
+  }
 
   // presign → PUT each file → commit metadata. Files are uploaded one at a time:
   // a phone pushing three videos in parallel starves each stream and makes the
@@ -240,16 +272,16 @@ export default function SubmitWorkPanel({
           method: 'POST',
           body: JSON.stringify({
             files: queue.map((q) => ({
-              name: q.file.name, contentType: q.contentType, size: q.file.size,
+              name: q.name, contentType: q.contentType, size: q.file.size,
               durationMs: q.durationMs, recorded: q.recorded,
             })),
           }),
         })
 
         for (let i = 0; i < uploads.length; i++) {
-          setProgress({ index: i, total: uploads.length, pct: 0, name: queue[i].file.name })
+          setProgress({ index: i, total: uploads.length, pct: 0, name: queue[i].name })
           await putToR2(uploads[i].uploadUrl, queue[i].file,
-            (p) => setProgress({ index: i, total: uploads.length, pct: Math.round(p * 100), name: queue[i].file.name }),
+            (p) => setProgress({ index: i, total: uploads.length, pct: Math.round(p * 100), name: queue[i].name }),
             ctrl.signal)
         }
 
@@ -450,12 +482,25 @@ export default function SubmitWorkPanel({
                       {queue.map((q, i) => (
                         <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-xl border border-teal-200 bg-teal-50">
                           <span>{KIND_ICON[q.kind] || '📎'}</span>
-                          <span className="text-xs text-gray-900 font-medium truncate flex-1">{q.file.name}</span>
-                          <span className="text-[10px] text-gray-400 flex-shrink-0">
-                            {q.durationMs ? fmtClock(q.durationMs) : fmtBytes(q.file.size)}
-                          </span>
-                          {!busy && (
-                            <button onClick={() => removeStaged(i)} className="text-gray-300 hover:text-red-500 text-lg leading-none">×</button>
+                          {renaming === i && !busy ? (
+                            <RenameField name={q.name}
+                              onSave={(base) => renameStaged(i, base)}
+                              onCancel={() => setRenaming(-1)} />
+                          ) : (
+                            <>
+                              <span className="text-xs text-gray-900 font-medium truncate flex-1" title={q.name}>{q.name}</span>
+                              <span className="text-[10px] text-gray-400 flex-shrink-0">
+                                {q.durationMs ? fmtClock(q.durationMs) : fmtBytes(q.file.size)}
+                              </span>
+                              {!busy && (
+                                <>
+                                  <button onClick={() => setRenaming(i)} title="Rename this file"
+                                    className="text-gray-400 hover:text-teal-600 text-sm leading-none px-0.5">✎</button>
+                                  <button onClick={() => removeStaged(i)} title="Remove this file"
+                                    className="text-gray-300 hover:text-red-500 text-lg leading-none">×</button>
+                                </>
+                              )}
+                            </>
                           )}
                         </div>
                       ))}
@@ -567,6 +612,48 @@ export default function SubmitWorkPanel({
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       {body}
+    </div>
+  )
+}
+
+// Inline rename for one staged file. Only the base name is editable; the
+// extension sits beside the input as a fixed suffix. Enter or clicking away
+// saves, Escape puts the old name back.
+function RenameField({ name, onSave, onCancel }) {
+  const { base, ext } = splitExt(name)
+  const [draft, setDraft] = useState(base)
+  const inputRef = useRef(null)
+  // Skip the blur that follows an Escape/Enter, otherwise the field saves twice
+  // (or saves right after it was cancelled).
+  const doneRef = useRef(false)
+
+  useEffect(() => { inputRef.current?.select() }, [])
+
+  const finish = (save) => {
+    if (doneRef.current) return
+    doneRef.current = true
+    if (save) onSave(draft)
+    else onCancel()
+  }
+
+  return (
+    <div className="flex items-center gap-1 flex-1 min-w-0">
+      <input ref={inputRef} type="text" value={draft} maxLength={MAX_BASENAME} autoFocus
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true) }
+          else if (e.key === 'Escape') { e.preventDefault(); finish(false) }
+        }}
+        onBlur={() => finish(true)}
+        aria-label="File name"
+        className="flex-1 min-w-0 text-xs text-gray-900 bg-white border border-teal-300 rounded-lg px-2 py-1 focus:outline-none focus:border-teal-500" />
+      {ext && <span className="text-xs text-gray-500 flex-shrink-0">{ext}</span>}
+      <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => finish(true)}
+        title="Save name"
+        className="text-teal-600 hover:text-teal-800 text-sm font-bold leading-none px-1">✓</button>
+      <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => finish(false)}
+        title="Keep the old name"
+        className="text-gray-400 hover:text-gray-700 text-lg leading-none px-0.5">×</button>
     </div>
   )
 }
