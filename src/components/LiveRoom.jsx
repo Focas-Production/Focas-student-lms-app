@@ -75,6 +75,12 @@ const LIVE_LAYOUT_CSS = `
 const AUTO_PIP_KEY = 'focas.livePip.auto'
 const readAutoPip = () => { try { return localStorage.getItem(AUTO_PIP_KEY) !== '0' } catch { return true } }
 // Why Auto can't fire right now — shown when the host switches it on in that state.
+// Tablet/phone browsers (iPad Safari, Android Chrome) have no getDisplayMedia, so
+// LiveKit's ControlBar silently drops its "Share screen" button there. We show a
+// greyed stand-in instead, so students and mentors learn it's a device limit.
+const SCREEN_SHARE_SUPPORTED = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia
+const SHARE_UNSUPPORTED = 'Screen share isn’t available in this browser. Use a laptop or desktop to share your screen.'
+
 const AUTO_NEEDS_MEDIA = 'Auto pop-out can’t fire while your microphone is off — Chrome only floats a tab that is using it. '
   + 'Turn on the mic and the class pops out by itself when you switch tabs.'
 const AUTO_NEEDS_HTTPS = 'Auto pop-out only works on an https page (a Chrome rule) — it will on the live site, but not on this address. '
@@ -187,6 +193,13 @@ function LiveRoomInner({
   const [playerEpoch, setPlayerEpoch] = useState(0)
   const onPlayerPlaying = useCallback(() => setPlayerEpoch((n) => n + 1), [])
   const [autoHint, setAutoHint] = useState('')
+  // Shown when someone taps the greyed "Share screen" stand-in on a tablet.
+  const [shareHint, setShareHint] = useState('')
+  useEffect(() => {
+    if (!shareHint) return undefined
+    const t = setTimeout(() => setShareHint(''), 6000)
+    return () => clearTimeout(t)
+  }, [shareHint])
   const autoHintTimer = useRef(null)
   useEffect(() => () => clearTimeout(autoHintTimer.current), [])
   const pip = usePictureInPicture({ getStageVideo, autoEnabled: !!canHost && autoPip, rearmKey: playerEpoch })
@@ -386,8 +399,22 @@ function LiveRoomInner({
   // Everything in the bar after LiveKit's own buttons. The timer is mounted
   // here even while minimized (the row is only CSS-hidden) so the countdown
   // keeps ticking and the chime still fires.
-  const barControls = (studentControls || hostControls || onToggleMinimize || timerClassId) ? (
+  const barControls = (!SCREEN_SHARE_SUPPORTED || studentControls || hostControls || onToggleMinimize || timerClassId) ? (
     <>
+      {!SCREEN_SHARE_SUPPORTED && (
+        <button
+          type="button"
+          className="lk-button"
+          aria-disabled="true"
+          onClick={() => setShareHint(SHARE_UNSUPPORTED)}
+          title={SHARE_UNSUPPORTED}
+          aria-label="Share screen (not available in this browser)"
+          style={{ opacity: 0.5, cursor: 'not-allowed' }}
+        >
+          <span aria-hidden="true">🖥</span>
+          <span className="focas-ctl-label">Share screen</span>
+        </button>
+      )}
       {studentControls}
       {onToggleMinimize && (
         <button
@@ -490,12 +517,25 @@ function LiveRoomInner({
             is not visible while in a class. Stacked so both can show at once.
             (While minimized the page IS visible and shows them itself.)
             Top-right is free now that every control sits in the bottom bar. */}
-        {!minimized && (notice || toast || pip.error || autoHint) && (
+        {!minimized && (notice || toast || pip.error || autoHint || shareHint) && (
           <div style={{
             position: 'absolute', top: 8, right: 8, zIndex: 21,
             display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4,
             maxWidth: '52vw',
           }}>
+            {shareHint && (
+              <div
+                onClick={() => setShareHint('')}
+                title="Dismiss"
+                style={{
+                  background: 'rgba(120,53,15,0.94)', color: '#fff', cursor: 'pointer',
+                  fontSize: 11, fontWeight: 600, padding: '6px 10px', borderRadius: 8,
+                  border: '1px solid rgba(245,158,11,0.6)', maxWidth: 380,
+                }}
+              >
+                🖥 {shareHint}
+              </div>
+            )}
             {autoHint && (
               <div
                 style={{
