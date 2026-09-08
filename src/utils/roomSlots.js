@@ -1,6 +1,6 @@
-// A mentor hosts a ROOM, not a track: they Start once and hop between the
-// room's tracks from inside (the in-room switcher starts the other track's
-// booking on the way in). So wherever the mentor portal lists classes, the
+// A mentor hosts a ROOM, not a track: they Start once (the server flips every
+// track of the slot live) and hop between the room's tracks from inside. So
+// wherever the mentor portal lists classes, the
 // tracks of one room that run at the same time collapse into a single "room
 // slot" with one Start / Enter button. Students are allotted to one track and
 // join that class directly, so their lists never group.

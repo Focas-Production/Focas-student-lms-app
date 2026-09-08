@@ -4,6 +4,7 @@ import { groupRoomSlots, slotPrimaryClass, trackLabelOf } from '../../utils/room
 import AttendanceModal from '../../components/AttendanceModal'
 import SubmissionsModal from '../../components/SubmissionsModal'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
+import DateField from '../../components/DateField'
 import { useLiveSession } from '../../components/LiveSessionProvider'
 
 function fmtWhen(d) {
@@ -187,7 +188,7 @@ function MentorSlotActions({ slot, busyId, sessionClassId, subCounts = {}, compa
     <>
       {primary && (
         <button onClick={() => onStart(primary)} disabled={busy}
-          title={slot.isGroup ? `Opens ${trackLabelOf(primary)} — switch tracks from inside the room` : undefined}
+          title={slot.isGroup ? `${primary.status === 'live' ? 'Opens' : 'Starts every track and opens'} ${trackLabelOf(primary)} — switch tracks from inside the room` : undefined}
           className={`${size} rounded-xl bg-teal-600 text-white font-semibold hover:bg-teal-700 disabled:bg-gray-300 whitespace-nowrap`}>
           {busy ? '…' : primary._id === sessionClassId ? 'Return' : primary.status === 'live' ? 'Enter' : 'Start'}
         </button>
@@ -215,8 +216,366 @@ function MentorSlotActions({ slot, busyId, sessionClassId, subCounts = {}, compa
   )
 }
 
-// Mentors host what the admin books for them — they don't schedule. This page is
-// their assignment list plus the controls to run a class.
+// Book a class from the mentor portal: what it teaches (subject → chapter →
+// unit, so attendance-driven chapter completion has its target), who hosts it
+// (defaults to the mentor booking it), where and when. The server holds the
+// booking rules — track overlaps and same-room host clashes come back as
+// descriptive 409s and are shown as-is.
+//
+// "Both tracks — same time" books the room's two tracks into one slot, each
+// teaching its own chapter: one mentor runs both, switching tracks inside the
+// room (the same-host rule makes any other pairing a 409 anyway).
+// Fresh per-track booking fields. `students` is the allotment: empty keeps the
+// class open to every student, any entries restrict seeing/joining to them.
+const emptyCurr = () => ({
+  subjectId: '', chapterId: '', unitId: '', title: '', titleTouched: false, students: [],
+})
+
+function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
+  const [hosts, setHosts] = useState([])
+  const [rooms, setRooms] = useState(null)   // raw topology — track labels + the "both tracks" option
+  const [allStudents, setAllStudents] = useState(null)  // light roster for the allotment picker
+  const [stuQ, setStuQ]     = useState({ first: '', second: '' })  // picker search text per track
+  const [saving, setSaving] = useState(false)
+  const [error, setError]   = useState('')
+
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const [form, setForm] = useState({
+    first: emptyCurr(),    // what track 1 (or the lone picked track) teaches
+    second: emptyCurr(),   // what track 2 teaches — only in "both tracks" mode
+    hostUserId: '', trackSel: '',
+    date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+    start: `${pad(Math.min(now.getHours() + 1, 22))}:00`, end: `${pad(Math.min(now.getHours() + 3, 23))}:00`,
+    description: '',
+  })
+
+  useEffect(() => {
+    apiFetch('/api/live-classes/manage/hosts')
+      .then((d) => setHosts(d.hosts || []))
+      .catch(() => {})
+    apiFetch('/api/live-classes/manage/students')
+      .then((d) => setAllStudents(d.students || []))
+      .catch(() => setAllStudents([]))
+    apiFetch('/api/live-classes/manage/topology')
+      .then((d) => {
+        const rs = d.rooms || []
+        setRooms(rs)
+        const r0 = rs[0]
+        setForm((f) => (f.trackSel ? f : { ...f, trackSel: r0?.tracks?.[0] ? `${r0.key}|${r0.tracks[0].key}` : '' }))
+      })
+      .catch(() => setRooms([]))
+  }, [])
+
+  const trackOptions = useMemo(() => {
+    const opts = []
+    for (const r of rooms || []) {
+      for (const tr of r.tracks || []) opts.push({ key: `${r.key}|${tr.key}`, label: `${r.label} · ${tr.label}` })
+      if ((r.tracks || []).length > 1) opts.push({ key: `${r.key}|*`, label: `${r.label} · Both tracks — same time` })
+    }
+    return opts
+  }, [rooms])
+
+  const [selRoomKey, selTrackToken] = form.trackSel ? form.trackSel.split('|') : ['', '']
+  const bothMode = selTrackToken === '*'
+  const selRoom = (rooms || []).find((r) => r.key === selRoomKey)
+  const t1 = selRoom?.tracks?.[0]
+  const t2 = selRoom?.tracks?.[1]
+
+  // Subject/chapter/unit picks flow into that track's title until the mentor types one.
+  const pickCurr = (which, patch) => {
+    setForm((f) => {
+      const cur = { ...f[which], ...patch }
+      const s = (syllabus || []).find((x) => String(x._id) === cur.subjectId)
+      const ch = (s?.chapters || []).find((x) => String(x._id) === cur.chapterId)
+      const u = (ch?.units || []).find((x) => String(x._id) === cur.unitId)
+      if (!cur.titleTouched) {
+        cur.title = ch ? `${s.name} — ${ch.name}${u ? ` · ${u.name}` : ''}` : (s ? s.name : '')
+      }
+      return { ...f, [which]: cur }
+    })
+  }
+  const setCurrTitle = (which, title) =>
+    setForm((f) => ({ ...f, [which]: { ...f[which], title, titleTouched: true } }))
+
+  const addStudent = (which, s) => {
+    setForm((f) => ({
+      ...f,
+      [which]: { ...f[which], students: [...f[which].students, { id: s.id, name: s.name || s.phoneNumber }] },
+    }))
+    setStuQ((v) => ({ ...v, [which]: '' }))
+  }
+  const removeStudent = (which, id) =>
+    setForm((f) => ({
+      ...f,
+      [which]: { ...f[which], students: f[which].students.filter((x) => String(x.id) !== String(id)) },
+    }))
+
+  // Plain render helper (not a nested component — that would remount and drop
+  // input focus on every keystroke): one track's subject/chapter/unit + title.
+  const currFields = (which) => {
+    const cur = form[which]
+    const subject = (syllabus || []).find((s) => String(s._id) === cur.subjectId)
+    const chapter = (subject?.chapters || []).find((c) => String(c._id) === cur.chapterId)
+    return (
+      <>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={label}>Subject</label>
+            <select className={field} value={cur.subjectId} required
+              onChange={(e) => pickCurr(which, { subjectId: e.target.value, chapterId: '', unitId: '' })}>
+              <option value="">Pick a subject…</option>
+              {(syllabus || []).map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={label}>Chapter</label>
+            <select className={field} value={cur.chapterId} required disabled={!subject}
+              onChange={(e) => pickCurr(which, { chapterId: e.target.value, unitId: '' })}>
+              <option value="">Pick a chapter…</option>
+              {(subject?.chapters || []).map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+            </select>
+          </div>
+        </div>
+        {(chapter?.units || []).length > 0 && (
+          <div>
+            <label className={label}>Unit <span className="normal-case font-normal">(optional)</span></label>
+            <select className={field} value={cur.unitId}
+              onChange={(e) => pickCurr(which, { unitId: e.target.value })}>
+              <option value="">Whole chapter</option>
+              {(chapter?.units || []).map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+            </select>
+          </div>
+        )}
+        <div>
+          <label className={label}>Title</label>
+          <input className={field} value={cur.title} placeholder="e.g. Accounting — chapter 2"
+            onChange={(e) => setCurrTitle(which, e.target.value)} />
+        </div>
+        {(() => {
+          // Allotment picker: chips of the chosen students plus a filter-as-you-
+          // type search over the one-shot roster. Empty allotment = open class.
+          const q = stuQ[which].trim().toLowerCase()
+          const picked = new Set(cur.students.map((s) => String(s.id)))
+          const matches = q
+            ? (allStudents || []).filter((s) => !picked.has(String(s.id))
+                && (s.name.toLowerCase().includes(q) || s.phoneNumber.includes(q))).slice(0, 8)
+            : []
+          return (
+            <div>
+              <label className={label}>
+                Students <span className="normal-case font-normal">(optional — leave empty to keep it open to all)</span>
+              </label>
+              {cur.students.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-1.5">
+                  {cur.students.map((s) => (
+                    <span key={String(s.id)}
+                      className="inline-flex items-center gap-1 text-[11px] bg-teal-100 text-teal-800 px-2 py-0.5 rounded-md">
+                      {s.name}
+                      <button type="button" onClick={() => removeStudent(which, s.id)}
+                        className="text-teal-500 hover:text-teal-900 font-bold leading-none">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <input className={field} value={stuQ[which]}
+                placeholder={allStudents === null ? 'Loading students…' : '🔍 Search name or number to add…'}
+                onChange={(e) => setStuQ((v) => ({ ...v, [which]: e.target.value }))} />
+              {matches.length > 0 && (
+                <div className="mt-1 border border-gray-100 rounded-xl divide-y divide-gray-50 max-h-40 overflow-y-auto shadow-sm bg-white">
+                  {matches.map((s) => (
+                    <button type="button" key={String(s.id)} onClick={() => addStudent(which, s)}
+                      className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-teal-50">
+                      {s.name || 'Unnamed'} <span className="text-xs text-gray-400">{s.phoneNumber}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {q && allStudents !== null && !matches.length && (
+                <p className="text-xs text-gray-400 mt-1">No student matches "{stuQ[which].trim()}"</p>
+              )}
+              {cur.students.length > 0 && (
+                <p className="text-[11px] text-amber-600 mt-1">
+                  Only these {cur.students.length} student{cur.students.length > 1 ? 's' : ''} will see and join this class.
+                </p>
+              )}
+            </div>
+          )
+        })()}
+      </>
+    )
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setError('')
+    if (!form.trackSel) return setError('Pick a room and track')
+    if (bothMode && (!t1 || !t2)) return setError('That room has no second track')
+    const currs = bothMode ? [form.first, form.second] : [form.first]
+    for (const c of currs) {
+      if (!c.subjectId || !c.chapterId) return setError('Pick the subject and chapter for every track')
+      if (!c.title.trim()) return setError('Give every track a title')
+    }
+    // The date field can be cleared; without this the Invalid Dates below would
+    // surface as a misleading "end must be after start".
+    if (!form.date) return setError('Pick a date')
+    const scheduledStart = new Date(`${form.date}T${form.start}`)
+    const scheduledEnd   = new Date(`${form.date}T${form.end}`)
+    if (!(scheduledEnd > scheduledStart)) return setError('End time must be after the start time')
+
+    const book = (trackKey, curr) => apiFetch('/api/live-classes/manage', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: curr.title.trim(),
+        description: form.description.trim(),
+        scheduledStart: scheduledStart.toISOString(),
+        scheduledEnd: scheduledEnd.toISOString(),
+        roomKey: selRoomKey, trackKey,
+        hostUserId: form.hostUserId || undefined,
+        subjectId: curr.subjectId,
+        chapterId: curr.chapterId,
+        unitId: curr.unitId || undefined,
+        // Non-empty → only these students see and can join the class.
+        studentIds: curr.students.map((s) => s.id),
+      }),
+    })
+
+    setSaving(true)
+    try {
+      if (!bothMode) {
+        await book(selTrackToken, form.first)
+        onCreated()
+        return
+      }
+      // Two bookings, same slot, same host. If track 1 fails nothing was
+      // booked and the plain error below covers it.
+      await book(t1.key, form.first)
+      try {
+        await book(t2.key, form.second)
+      } catch (err) {
+        // Track 1 IS booked — flip the form to just track 2 so pressing
+        // Schedule again can't double-book track 1.
+        onBooked?.()
+        setForm((f) => ({
+          ...f,
+          trackSel: `${selRoomKey}|${t2.key}`,
+          first: { ...f.second, titleTouched: true },
+          second: emptyCurr(),
+        }))
+        setError(`${selRoom?.label} · ${t1.label} was booked, but ${t2.label} failed: ${err.message} — fix it and press Schedule again to book just ${t2.label}.`)
+        return
+      }
+      onCreated()
+    } catch (err) {
+      setError(err.message || 'Could not schedule the class')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const field = 'w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:border-teal-400'
+  const label = 'block text-[11px] font-bold text-gray-500 uppercase mb-1'
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <form onSubmit={submit}
+        className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
+          <p className="text-sm font-bold text-gray-900">Schedule a live class</p>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
+        </div>
+
+        <div className="p-5 space-y-3 overflow-y-auto">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={label}>Mentor (host)</label>
+              <select className={field} value={form.hostUserId}
+                onChange={(e) => setForm((f) => ({ ...f, hostUserId: e.target.value }))}>
+                <option value="">Me</option>
+                {hosts.map((h) => <option key={h.id} value={h.id}>{h.name}{h.role === 'admin' ? ' (admin)' : ''}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={label}>Room · Track</label>
+              <select className={field} value={form.trackSel} required
+                onChange={(e) => setForm((f) => ({ ...f, trackSel: e.target.value }))}>
+                {rooms === null && <option value="">Loading…</option>}
+                {trackOptions.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {bothMode ? (
+            <>
+              <div className="rounded-xl border border-teal-100 bg-teal-50/40 p-3 space-y-3">
+                <p className="text-[11px] font-bold text-teal-700 uppercase">{t1?.label || 'Track 1'} teaches</p>
+                {currFields('first')}
+              </div>
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-3 space-y-3">
+                <p className="text-[11px] font-bold text-indigo-700 uppercase">{t2?.label || 'Track 2'} teaches</p>
+                {currFields('second')}
+              </div>
+              <p className="text-[11px] text-gray-400 leading-relaxed">
+                Both tracks run in the same slot with the same mentor — start once, then
+                switch tracks inside the room.
+              </p>
+            </>
+          ) : (
+            currFields('first')
+          )}
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className={label}>Date</label>
+              {/* DD/MM/YYYY — a native date input shows the browser's locale order instead */}
+              <DateField className={field} value={form.date} required
+                onChange={(iso) => setForm((f) => ({ ...f, date: iso }))} />
+            </div>
+            <div>
+              <label className={label}>Starts</label>
+              <input type="time" className={field} value={form.start} required
+                onChange={(e) => setForm((f) => ({ ...f, start: e.target.value }))} />
+            </div>
+            <div>
+              <label className={label}>Ends</label>
+              <input type="time" className={field} value={form.end} required
+                onChange={(e) => setForm((f) => ({ ...f, end: e.target.value }))} />
+            </div>
+          </div>
+
+          <div>
+            <label className={label}>Description <span className="normal-case font-normal">(optional)</span></label>
+            <input className={field} value={form.description} placeholder="What this session covers"
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+          </div>
+
+          {error && <p className="text-sm text-red-500">{error}</p>}
+          <p className="text-[11px] text-gray-400 leading-relaxed">
+            Attendance and chapter completion are tracked for this class just like an
+            admin-scheduled one — students who attend enough get the chapter/unit marked
+            automatically when you end it.
+          </p>
+        </div>
+
+        <div className="px-5 py-4 border-t border-gray-100 flex justify-end gap-2">
+          <button type="button" onClick={onClose}
+            className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 text-sm font-semibold hover:bg-gray-50">
+            Close
+          </button>
+          <button type="submit" disabled={saving}
+            className="px-4 py-2 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:bg-gray-300">
+            {saving ? 'Scheduling…' : bothMode ? 'Schedule both tracks' : 'Schedule class'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+// Mentors run what the admin assigns them — and can now book their own classes
+// too (subject, chapter, host and slot). This page is that list plus the
+// controls to run a class.
 //
 // The room itself is NOT rendered here: it lives in LiveSessionProvider at the
 // layout level, so a minimized class survives navigating to other mentor pages.
@@ -235,6 +594,7 @@ export default function MentorLiveClassesPage() {
   const [page, setPage]             = useState(1)
   const [pageInfo, setPageInfo]     = useState(null)   // { total, pages } from the server
   const [calTick, setCalTick]       = useState(0)      // bumped when this page changes a class, so the calendar refetches
+  const [schedule, setSchedule]     = useState(false)  // schedule-a-class modal open
 
   const { session, minimized, startOrEnter: enterSession, subCounts, setSubCounts } = useLiveSession()
 
@@ -286,8 +646,14 @@ export default function MentorLiveClassesPage() {
 
   useEffect(() => { if (classes?.length) loadSubCounts(classes) }, [classes, loadSubCounts])
 
+  // ?all=1: every active subject, not just the ones this mentor has hosted.
+  // The schedule form lists these as bookable (a mentor may pick any subject,
+  // assigned or not), and a first-time mentor has hosted nothing yet — the
+  // hosted-only default would leave the subject picker empty. The lookups on
+  // this page (covered modal, progress ticks) go by id, so the wider list
+  // changes nothing there. The Syllabus page keeps the hosted-only checklist.
   const loadSyllabus = useCallback(() => {
-    return apiFetch('/api/live-classes/manage/syllabus')
+    return apiFetch('/api/live-classes/manage/syllabus?all=1')
       .then(d => setSyllabus(d.subjects || []))
       .catch(() => setSyllabus([]))
   }, [])
@@ -409,6 +775,23 @@ export default function MentorLiveClassesPage() {
     }
   }
 
+  // A mentor may cancel any session in their list (they host it, or booked it)
+  // while it's still scheduled; once live, End is the way out (server enforces both).
+  const canCancel = (c) => c.status === 'scheduled'
+  const cancelOwn = async (cls) => {
+    if (!confirm('Cancel this class? Students will no longer see it.')) return
+    setBusyId(cls._id); setError('')
+    try {
+      await apiFetch(`/api/live-classes/manage/${cls._id}/cancel`, { method: 'POST' })
+      setCalTick((t) => t + 1)
+      await load()
+    } catch (err) {
+      setError(err.message || 'Could not cancel the class')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const openAttendance = async (cls) => {
     setAttendance({ id: cls._id, title: cls.title, roster: null, class: null, meta: null })
     try {
@@ -468,16 +851,22 @@ export default function MentorLiveClassesPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 mb-1">Tutor Session</h1>
           <p className="text-gray-400 text-sm">
-            Sessions your admin has assigned to you. Start one to go live with your students.
+            Sessions assigned by your admin — or booked by you. Start one to go live with your students.
           </p>
         </div>
-        <div className="flex rounded-xl border border-gray-200 overflow-hidden text-xs font-semibold bg-white">
-          {[['list', 'List'], ['calendar', 'Calendar']].map(([key, label]) => (
-            <button key={key} onClick={() => setTab(key)}
-              className={`px-4 h-9 ${tab === key ? 'bg-teal-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>
-              {label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={() => setSchedule(true)}
+            className="px-4 h-9 rounded-xl bg-teal-600 text-white text-xs font-semibold hover:bg-teal-700">
+            ＋ Schedule class
+          </button>
+          <div className="flex rounded-xl border border-gray-200 overflow-hidden text-xs font-semibold bg-white">
+            {[['list', 'List'], ['calendar', 'Calendar']].map(([key, label]) => (
+              <button key={key} onClick={() => setTab(key)}
+                className={`px-4 h-9 ${tab === key ? 'bg-teal-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -516,7 +905,11 @@ export default function MentorLiveClassesPage() {
       ) : !classes.length ? (
         <div className="bg-white rounded-2xl p-8 text-center">
           <p className="text-gray-700 font-semibold mb-1">No classes assigned to you yet</p>
-          <p className="text-gray-400 text-sm">When an admin schedules a class with you as host, it'll show up here.</p>
+          <p className="text-gray-400 text-sm mb-4">When an admin schedules a class with you as host, it'll show up here — or book one yourself.</p>
+          <button onClick={() => setSchedule(true)}
+            className="px-4 py-2 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700">
+            ＋ Schedule class
+          </button>
         </div>
       ) : (
         <><div className="space-y-3">
@@ -542,13 +935,20 @@ export default function MentorLiveClassesPage() {
                     {((only && runDuration(only)) || s.isGroup) && (
                       <p className="text-xs text-gray-500 mt-1">
                         {only && runDuration(only) && <span>ran {runDuration(only)}</span>}
-                        {s.isGroup && <span>Start once, then switch tracks inside the room</span>}
+                        {s.isGroup && <span>Start once — every track goes live — then switch tracks inside the room</span>}
                       </p>
                     )}
                   </div>
 
                   <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
                     {only && renderSyllabusButtons(only)}
+                    {only && canCancel(only) && (
+                      <button onClick={() => cancelOwn(only)} disabled={busyId === only._id}
+                        title="Cancel this session while it hasn't started"
+                        className="px-3 py-2 rounded-xl border border-red-200 text-red-600 text-sm font-semibold hover:bg-red-50 whitespace-nowrap">
+                        Cancel
+                      </button>
+                    )}
                     <MentorSlotActions slot={s} busyId={busyId} sessionClassId={session?.classId}
                       subCounts={subCounts} showTracks={!s.isGroup}
                       onStart={startOrEnter} onEnd={endClass} onAttendance={openAttendance}
@@ -571,6 +971,13 @@ export default function MentorLiveClassesPage() {
                         </div>
                         <div className="flex items-center gap-2 flex-wrap">
                           {renderSyllabusButtons(c, true)}
+                          {canCancel(c) && (
+                            <button onClick={() => cancelOwn(c)} disabled={busyId === c._id}
+                              title="Cancel this session while it hasn't started"
+                              className="px-3 py-1.5 rounded-xl border border-red-200 text-red-600 text-xs font-semibold hover:bg-red-50 whitespace-nowrap">
+                              Cancel
+                            </button>
+                          )}
                           <TrackActions cls={c} busyId={busyId} subCount={subCounts[c._id]} compact
                             onEnd={endClass} onAttendance={openAttendance}
                             onSubmissions={(cls) => setSubmissions({ id: cls._id, title: cls.title })} />
@@ -599,6 +1006,18 @@ export default function MentorLiveClassesPage() {
             </button>
           </div>
         )}</>
+      )}
+
+      {/* Book a new class: subject/chapter, host, room · track and slot times */}
+      {schedule && (
+        <ScheduleClassModal
+          syllabus={syllabus}
+          onClose={() => setSchedule(false)}
+          onCreated={() => { setSchedule(false); setCalTick((t) => t + 1); load() }}
+          // "Both tracks" can land its first booking and fail the second — the
+          // modal stays open to retry, but the list behind it must show track 1.
+          onBooked={() => { setCalTick((t) => t + 1); load() }}
+        />
       )}
 
       {/* Everything an ended session finished — booked item plus extras */}
