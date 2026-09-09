@@ -17,8 +17,22 @@ import useMediaRecorder, { isRecordingSupported } from '../hooks/useMediaRecorde
 // camera back to the browser before recording and restore the class video after.
 // On mobile only one consumer can hold the camera, so without this a video
 // recording either fails outright or kills the student's class video.
+//
+// `paused` (optional, in-room) — true while the overlay is hidden behind a
+// minimized class window. The panel re-reads what's already submitted each
+// time it comes back into view: the student may have handed work in from the
+// page's own dialog meanwhile.
+//
+// `bottomInset` (optional, page dialog only) — pixels to keep clear at the
+// bottom of the screen, for the minimized class window that floats there.
 
-const MAX_FILES = 8
+// Fallback for the server's MAX_FILES_PER_SUBMISSION (classSubmissionController.js);
+// the value the server actually enforces arrives as `maxFiles` and wins.
+const MAX_FILES = 50
+// Rows of already-submitted files shown before the list folds behind a
+// "Show all" toggle — with dozens handed in, the picker and Submit button
+// must not sit below a screen of old rows.
+const SUBMITTED_PREVIEW = 4
 const LIMITS = {           // mirrors MAX_BYTES in classSubmissionController.js
   audio: 25 * 1024 * 1024,
   video: 200 * 1024 * 1024,
@@ -136,10 +150,12 @@ function putToR2(uploadUrl, file, onProgress, signal) {
 
 export default function SubmitWorkPanel({
   classId, classTitle, embedded = false, onClose, onCountChange, cameraControls,
+  paused = false, bottomInset = 0,
 }) {
-  const [data, setData]       = useState(null)   // { submission, canSubmit, closedReason, work }
+  const [data, setData]       = useState(null)   // { submission, canSubmit, closedReason, maxFiles, work }
   const [queue, setQueue]     = useState([])     // staged files not yet uploaded; `name` is what we send, `file.name` is what the device gave us
   const [renaming, setRenaming] = useState(-1)   // index of the staged file being renamed, -1 = none
+  const [showAllSubmitted, setShowAllSubmitted] = useState(false)
   const [note, setNote]       = useState('')
   const [busy, setBusy]       = useState(false)
   const [progress, setProgress] = useState(null) // { index, total, pct, name }
@@ -174,12 +190,18 @@ export default function SubmitWorkPanel({
     }
   }, [classId, onCountChange])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { if (!paused) load() }, [load, paused])
   useEffect(() => () => abortRef.current?.abort(), [])
 
   const submitted = data?.submission
   const attached = submitted?.files?.length || 0
-  const slotsLeft = Math.max(0, MAX_FILES - attached - queue.length)
+  const maxFiles = data?.maxFiles || MAX_FILES
+  const slotsLeft = Math.max(0, maxFiles - attached - queue.length)
+  // Oldest first, as stored; when folded, the newest rows are the ones kept —
+  // that's the feedback for what was just handed in.
+  const submittedFiles = submitted?.files || []
+  const foldSubmitted = submittedFiles.length > SUBMITTED_PREVIEW && !showAllSubmitted
+  const visibleSubmitted = foldSubmitted ? submittedFiles.slice(-SUBMITTED_PREVIEW) : submittedFiles
   // "Reviewed" shows the marks but is NOT a lock: while the class window is open
   // the student may keep handing work in (it goes back to the mentor's queue).
   // Only removing already-graded files is blocked until then — the server
@@ -204,7 +226,7 @@ export default function SubmitWorkPanel({
     const accepted = []
     for (const f of incoming) {
       if (accepted.length >= slotsLeft) {
-        setError(`You can attach at most ${MAX_FILES} files to a class`)
+        setError(`You can attach at most ${maxFiles} files to a class`)
         break
       }
       const kind = kindOf(f)
@@ -223,7 +245,7 @@ export default function SubmitWorkPanel({
   }
 
   const stageRecording = (result) => {
-    if (!slotsLeft) { setError(`You can attach at most ${MAX_FILES} files to a class`); return }
+    if (!slotsLeft) { setError(`You can attach at most ${maxFiles} files to a class`); return }
     setQueue((q) => [...q, {
       file: result.file,
       name: result.file.name,
@@ -337,9 +359,15 @@ export default function SubmitWorkPanel({
   }
 
   // ── chrome ──
+  // Both shells bound their own height and scroll the middle section, so the
+  // header and the Submit footer stay on screen no matter how many files are
+  // listed. (In-room the old shell stretched to its content and the footer
+  // was clipped off the bottom once enough files had been handed in.) The
+  // page dialog's bound is the padded overlay's height, so `bottomInset`
+  // below shortens it too.
   const shell = embedded
-    ? 'w-full h-full flex flex-col bg-white'
-    : 'bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col'
+    ? 'w-full max-h-[92dvh] flex flex-col bg-white rounded-2xl overflow-hidden'
+    : 'bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-full flex flex-col'
 
   const body = (
     // colorScheme light: the panel is a white card, so its native form controls
@@ -410,10 +438,10 @@ export default function SubmitWorkPanel({
             {attached > 0 && (
               <div className="mb-4">
                 <p className="text-[11px] font-bold text-gray-400 uppercase mb-1.5">
-                  Submitted ({attached}/{MAX_FILES})
+                  Submitted ({attached}/{maxFiles})
                 </p>
                 <div className="space-y-1.5">
-                  {submitted.files.map((f) => (
+                  {visibleSubmitted.map((f) => (
                     <div key={f.key} className="flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200 bg-gray-50">
                       <span>{KIND_ICON[f.kind] || '📎'}</span>
                       <button onClick={() => openFile(f.key)} className="text-xs text-gray-900 font-medium truncate flex-1 text-left hover:underline">
@@ -430,6 +458,14 @@ export default function SubmitWorkPanel({
                     </div>
                   ))}
                 </div>
+                {submittedFiles.length > SUBMITTED_PREVIEW && (
+                  <button type="button" onClick={() => setShowAllSubmitted((v) => !v)}
+                    className="mt-1.5 text-xs font-semibold text-teal-700 hover:underline">
+                    {foldSubmitted
+                      ? `Show all ${submittedFiles.length} files (${submittedFiles.length - SUBMITTED_PREVIEW} more)`
+                      : `Show only the latest ${SUBMITTED_PREVIEW}`}
+                  </button>
+                )}
               </div>
             )}
 
@@ -459,7 +495,7 @@ export default function SubmitWorkPanel({
                       {slotsLeft ? '+ Choose files or take a photo' : 'File limit reached'}
                     </button>
                     <p className="text-[10px] text-gray-400 mt-1.5 text-center">
-                      PDF, Word, PowerPoint, images, audio, video · up to {MAX_FILES} files
+                      PDF, Word, PowerPoint, images, audio, video · up to {maxFiles} files
                     </p>
                   </div>
                 )}
@@ -610,7 +646,14 @@ export default function SubmitWorkPanel({
 
   if (embedded) return body
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+    // Extra bottom padding keeps the dialog clear of the minimized class
+    // window (LiveRoom's corner window floats above modals), so that window
+    // never covers the Submit button.
+    <div
+      className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+      style={bottomInset ? { paddingBottom: bottomInset + 16 } : undefined}
+      onClick={onClose}
+    >
       {body}
     </div>
   )

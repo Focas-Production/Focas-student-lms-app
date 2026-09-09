@@ -421,7 +421,7 @@ function LiveRoomInner({
           type="button"
           className="lk-button"
           onClick={onToggleMinimize}
-          title="Minimize — the class keeps running in a small window while you use the page behind it (e.g. review submissions)"
+          title={`Minimize — the class keeps running in a small window while you use the page behind it (e.g. ${canHost ? 'review submissions' : 'submit your work'})`}
           aria-label="Minimize the class to a small window"
         >
           <span aria-hidden="true">⧉</span>
@@ -597,10 +597,15 @@ function LiveRoomInner({
           </div>
         )}
 
+        {/* Stays MOUNTED while minimized (only hidden): an upload in flight
+            keeps going and staged files survive, and the panel re-reads the
+            submission on expand — the student may have handed work in from
+            the page's own dialog meanwhile. */}
         {submitClass && submitOpen && (
           <SubmitOverlay
             classId={submitClass.id}
             classTitle={submitClass.title}
+            hidden={!!minimized}
             onClose={() => setSubmitOpen(false)}
             onCountChange={setSubmittedCount}
           />
@@ -655,7 +660,7 @@ function LiveRoomInner({
 // gives its camera to one consumer at a time, so LiveKit has to let go before the
 // recorder can take it, and gets it back when the recording ends. Whatever the
 // student had switched on is restored — never switched on for them.
-function SubmitOverlay({ classId, classTitle, onClose, onCountChange }) {
+function SubmitOverlay({ classId, classTitle, hidden, onClose, onCountChange }) {
   const { localParticipant } = useLocalParticipant()
   // What was on before we borrowed the devices, so restore is faithful.
   const priorRef = useRef({ camera: false, mic: false })
@@ -689,20 +694,22 @@ function SubmitOverlay({ classId, classTitle, onClose, onCountChange }) {
     <div
       style={{
         position: 'absolute', inset: 0, zIndex: 40,
-        background: 'rgba(0,0,0,0.6)', display: 'flex',
+        background: 'rgba(0,0,0,0.6)', display: hidden ? 'none' : 'flex',
         alignItems: 'center', justifyContent: 'center', padding: 12,
       }}
       onClick={onClose}
     >
-      <div
-        style={{ width: '100%', maxWidth: 480, maxHeight: '92dvh', display: 'flex', borderRadius: 16, overflow: 'hidden' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <Suspense fallback={<div style={{ background: '#fff', padding: 24, width: '100%', textAlign: 'center', fontSize: 13, color: '#6b7280' }}>Loading…</div>}>
+      {/* A plain block, not a flex row: the panel bounds its OWN height
+          (max-height + an inner scroll area), which is what keeps its Submit
+          button on screen however many files are listed. As a stretched flex
+          item it grew with its content and the footer was clipped away. */}
+      <div style={{ width: '100%', maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+        <Suspense fallback={<div style={{ background: '#fff', borderRadius: 16, padding: 24, width: '100%', textAlign: 'center', fontSize: 13, color: '#6b7280' }}>Loading…</div>}>
           <SubmitWorkPanel
             embedded
             classId={classId}
             classTitle={classTitle}
+            paused={hidden}
             onClose={onClose}
             onCountChange={onCountChange}
             cameraControls={{ release, restore }}

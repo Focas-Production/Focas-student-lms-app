@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { apiFetch } from '../../api'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
+import { useStudentLiveSession } from '../../components/StudentLiveSessionProvider'
 
-// Lazy-loaded so the ~1.4 MB LiveKit bundle is only fetched when a student
-// actually joins a class, not on every page visit.
-const LiveRoom = lazy(() => import('../../components/LiveRoom'))
-// Same reasoning for the recorder — only loaded when work is actually submitted.
+// Only loaded when work is actually submitted — it carries the recorder.
 const SubmitWorkPanel = lazy(() => import('../../components/SubmitWorkPanel'))
+
+// Height of the minimized class window (LiveRoom's corner window: 200px tall,
+// 16px off the bottom edge). The submit dialog keeps this much clear so the
+// window never sits on top of its Submit button.
+const CORNER_WINDOW_INSET = 216
 
 function fmtWhen(d) {
   if (!d) return ''
@@ -22,12 +25,15 @@ function fmtWhen(d) {
 //   compact     smaller buttons for calendar rows
 //   placeholder show a "Not started" pill for upcoming classes (list cards only —
 //               the calendar modal already shows a countdown)
-function StudentClassActions({ cls, joining, onJoin, onSubmit, compact = false, placeholder = false }) {
+//   inClassId   the class the student is connected to right now (minimized) —
+//               its button reads "Back to class" and just expands the window
+function StudentClassActions({ cls, joining, inClassId, onJoin, onSubmit, compact = false, placeholder = false }) {
   const live = cls.status === 'live'
   const scheduled = cls.status === 'scheduled'
   const showPlaceholder = placeholder && scheduled && !live
   if (!live && !cls.submissionOpen && !showPlaceholder) return null
 
+  const inThisClass = !!inClassId && inClassId === cls._id
   const size = compact ? 'px-3 py-1.5 text-xs' : 'px-4 py-2.5 text-sm'
   const grow = compact ? '' : 'flex-1 sm:flex-none'
   return (
@@ -42,8 +48,9 @@ function StudentClassActions({ cls, joining, onJoin, onSubmit, compact = false, 
       )}
       {live ? (
         <button onClick={() => onJoin(cls)} disabled={joining === cls._id}
-          className={`${grow} ${size} rounded-xl bg-red-600 text-white font-semibold hover:bg-red-700 disabled:bg-gray-200 disabled:text-gray-400 whitespace-nowrap`}>
-          {joining === cls._id ? 'Joining…' : 'Join now'}
+          className={`${grow} ${size} rounded-xl font-semibold whitespace-nowrap disabled:bg-gray-200 disabled:text-gray-400 ${
+            inThisClass ? 'bg-teal-600 text-white hover:bg-teal-700' : 'bg-red-600 text-white hover:bg-red-700'}`}>
+          {joining === cls._id ? 'Joining…' : inThisClass ? '⤢ Back to class' : 'Join now'}
         </button>
       ) : showPlaceholder ? (
         <span className={`${grow} ${size} text-center rounded-xl bg-gray-100 text-gray-400 font-semibold whitespace-nowrap`}>
@@ -56,12 +63,12 @@ function StudentClassActions({ cls, joining, onJoin, onSubmit, compact = false, 
 
 export default function LiveClassesPage() {
   const [classes, setClasses] = useState(null)
-  const [session, setSession] = useState(null)   // { classId, token, wsUrl, title } while in a room
-  const [joining, setJoining] = useState(null)    // id being joined
   const [error, setError]     = useState('')
-  const [handRaised, setHandRaised] = useState(false)
   const [submitFor, setSubmitFor] = useState(null)  // { id, title } while the panel is open
   const [tab, setTab] = useState('list')            // 'list' | 'calendar'
+  // The room itself is owned by the layout-level provider, so it survives
+  // navigating away while minimized (see StudentLiveSessionProvider).
+  const { session, minimized, join: enterClass, joining, notice, clearNotice } = useStudentLiveSession()
 
   const load = useCallback(async () => {
     try {
@@ -72,73 +79,27 @@ export default function LiveClassesPage() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  // On mount, and whenever this page becomes visible again — the class ended
+  // (or the student left), or they minimized it — since a class may have gone
+  // live or ended while the room covered the page.
+  const pageVisible = !session || minimized
+  useEffect(() => { if (pageVisible) load() }, [load, pageVisible])
 
-  // Refresh every 20s so a class flips to "Join now" shortly after the host starts it.
+  // Refresh every 20s so a class flips to "Join now" shortly after the host
+  // starts it. Paused while the room covers the page — nobody can see the list.
   useEffect(() => {
-    if (session) return                 // pause polling while in a call
+    if (!pageVisible) return
     const t = setInterval(load, 20_000)
     return () => clearInterval(t)
-  }, [load, session])
+  }, [load, pageVisible])
 
   const join = async (cls) => {
-    setJoining(cls._id); setError('')
+    setError('')
     try {
-      const d = await apiFetch(`/api/live-classes/${cls._id}/join-token`)
-      setHandRaised(false)   // the server drops any stale hand on (re)join
-      setSession({
-        classId: cls._id,
-        token: d.token,
-        wsUrl: d.wsUrl,
-        title: d.liveClass?.title || cls.title,
-        subtitle: [d.liveClass?.roomLabel, d.liveClass?.trackLabel].filter(Boolean).join(' · '),
-        hostUserId: d.liveClass?.hostUserId || '',
-      })
+      await enterClass(cls)
     } catch (e) {
       setError(e.message || 'Could not join the class')
-    } finally {
-      setJoining(null)
     }
-  }
-
-  // info.removed: the host removed this student — say so, don't just vanish.
-  const leave = (info) => {
-    setSession(null); setHandRaised(false)
-    setError(info?.removed ? 'The host removed you from this class.' : '')
-    load()
-  }
-
-  // 🖐 toggle — the server notifies the host, even when they're currently
-  // teaching in the other track of the room.
-  const toggleHand = async () => {
-    const next = !handRaised
-    try {
-      await apiFetch(`/api/live-classes/${session.classId}/hand`, {
-        method: 'POST', body: JSON.stringify({ raised: next }),
-      })
-      setHandRaised(next)
-    } catch {
-      // Best-effort — a failed raise just leaves the button as it was.
-    }
-  }
-
-  if (session) {
-    return (
-      <Suspense fallback={<div style={{ position: 'fixed', inset: 0, background: '#0b0b0f', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>Loading class…</div>}>
-        <LiveRoom
-          token={session.token}
-          wsUrl={session.wsUrl}
-          canHost={false}
-          hostIdentity={session.hostUserId}
-          title={session.title}
-          subtitle={session.subtitle}
-          onRaiseHand={toggleHand}
-          handRaised={handRaised}
-          submitClass={{ id: session.classId, title: session.title }}
-          onLeave={leave}
-        />
-      </Suspense>
-    )
   }
 
   return (
@@ -159,12 +120,19 @@ export default function LiveClassesPage() {
       </div>
 
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
+      {/* Why the last class ended, when it wasn't the student's choice. */}
+      {notice && (
+        <p className="text-sm text-red-500 mb-3 flex items-center gap-2">
+          <span>{notice}</span>
+          <button onClick={clearNotice} className="text-gray-400 hover:text-gray-600 text-lg leading-none" title="Dismiss">×</button>
+        </p>
+      )}
 
       {tab === 'calendar' ? (
         <ScheduleCalendar
           endpoint="/api/live-classes/schedule"
           renderActions={(c, { compact, close }) => (
-            <StudentClassActions cls={c} joining={joining} compact={compact}
+            <StudentClassActions cls={c} joining={joining} inClassId={session?.classId} compact={compact}
               onJoin={(cls) => { close(); join(cls) }}
               onSubmit={(cls) => { close(); setSubmitFor({ id: cls._id, title: cls.title }) }} />
           )}
@@ -211,7 +179,7 @@ export default function LiveClassesPage() {
                 </div>
 
                 <div className="flex gap-2 flex-shrink-0 w-full sm:w-auto">
-                  <StudentClassActions cls={c} joining={joining} placeholder
+                  <StudentClassActions cls={c} joining={joining} inClassId={session?.classId} placeholder
                     onJoin={join}
                     onSubmit={(cls) => setSubmitFor({ id: cls._id, title: cls.title })} />
                 </div>
@@ -226,6 +194,7 @@ export default function LiveClassesPage() {
           <SubmitWorkPanel
             classId={submitFor.id}
             classTitle={submitFor.title}
+            bottomInset={session && minimized ? CORNER_WINDOW_INSET : 0}
             onClose={() => { setSubmitFor(null); load() }}
           />
         </Suspense>

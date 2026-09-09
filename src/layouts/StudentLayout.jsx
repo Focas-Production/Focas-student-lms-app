@@ -1,5 +1,6 @@
 import { Outlet, NavLink } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import StudentLiveSessionProvider from '../components/StudentLiveSessionProvider'
 
 const NAV = [
   {
@@ -40,6 +41,11 @@ export default function StudentLayout() {
   const { user } = useAuth()
 
   return (
+    // The live-class room lives in this provider (not in a page), so a student
+    // with the class minimized can submit work from the page behind it — or
+    // browse elsewhere — without the navigation unmounting the room and
+    // dropping them from the class.
+    <StudentLiveSessionProvider>
     <div className="flex min-h-screen bg-gray-50">
 
       {/* Sidebar — desktop only */}
@@ -112,5 +118,6 @@ export default function StudentLayout() {
         </nav>
       </div>
     </div>
+    </StudentLiveSessionProvider>
   )
 }
