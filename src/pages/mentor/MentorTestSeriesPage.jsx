@@ -24,6 +24,9 @@ async function putToR2(uploadUrl, file) {
 
 const TABS = [['pool', 'Pool'], ['mine', 'Assigned to me'], ['completed', 'Completed']]
 
+// Whole days since `d` (0 when missing) — how long a paper has been with the mentor.
+const daysSince = (d) => d ? Math.max(0, Math.floor((Date.now() - new Date(d).getTime()) / 86400000)) : 0
+
 // Ensure a mentor-entered link is absolute so target="_blank" doesn't resolve it
 // relative to the app (e.g. "drive.google.com/…" → localhost:5173/mentor/drive…).
 // Returns '' for values that don't look like a URL at all (e.g. a stray "409787").
@@ -40,13 +43,20 @@ export default function MentorTestSeriesPage() {
   const [rows, setRows] = useState(null)
   const [evaluating, setEvaluating] = useState(null) // submission being evaluated
   const [toast, setToast] = useState('')
+  const [overdueDays, setOverdueDays] = useState(7)   // evaluation deadline set by admin
 
   const showToast = (m) => { setToast(m); setTimeout(() => setToast(''), 4000) }
 
   const load = useCallback(() => {
     setRows(null)
-    apiFetch(`/api/mentor/test-series?tab=${tab}`).then(d => setRows(d.submissions || [])).catch(() => setRows([]))
+    apiFetch(`/api/mentor/test-series?tab=${tab}`)
+      .then(d => { setRows(d.submissions || []); if (d.overdueDays) setOverdueDays(d.overdueDays) })
+      .catch(() => setRows([]))
   }, [tab])
+
+  const overdueCount = tab === 'mine' && rows
+    ? rows.filter(r => daysSince(r.assignedAt || r.createdAt) >= overdueDays).length
+    : 0
 
   useEffect(() => { load() }, [load])
 
@@ -78,6 +88,13 @@ export default function MentorTestSeriesPage() {
         ))}
       </div>
 
+      {overdueCount > 0 && (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <span className="font-bold">⚠ {overdueCount} paper{overdueCount === 1 ? '' : 's'} overdue.</span>{' '}
+          Papers must be evaluated within {overdueDays} days of assignment. Students are waiting on your feedback — please clear these today.
+        </div>
+      )}
+
       {rows === null ? (
         <div className="bg-white rounded-2xl p-8 text-center text-gray-400 text-sm">Loading…</div>
       ) : !rows.length ? (
@@ -90,7 +107,7 @@ export default function MentorTestSeriesPage() {
       ) : (
         <div className="space-y-2.5">
           {rows.map(r => (
-            <SubmissionCard key={r._id} sub={r} tab={tab}
+            <SubmissionCard key={r._id} sub={r} tab={tab} overdueDays={overdueDays}
               onAssign={() => assignToMe(r._id)}
               onEvaluate={() => setEvaluating(r)} />
           ))}
@@ -105,14 +122,24 @@ export default function MentorTestSeriesPage() {
   )
 }
 
-function SubmissionCard({ sub, tab, onAssign, onEvaluate }) {
+function SubmissionCard({ sub, tab, overdueDays = 7, onAssign, onEvaluate }) {
+  // "Assigned to me" only: how long the paper has been with this mentor.
+  const waiting = tab === 'mine' ? daysSince(sub.assignedAt || sub.createdAt) : null
+  const overdue = waiting != null && waiting >= overdueDays
   return (
-    <div className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-4">
+    <div className={`bg-white rounded-2xl shadow-sm p-4 flex items-center gap-4 ${overdue ? 'ring-1 ring-red-200' : ''}`}>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="font-semibold text-gray-900 truncate">{sub.fileName}</p>
           {sub.assignedVia === 'auto' && tab === 'mine' && (
             <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded-full font-semibold">auto-assigned</span>
+          )}
+          {waiting != null && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+              overdue ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'
+            }`}>
+              {overdue ? `⚠ overdue · ${waiting}d` : `waiting ${waiting}d`}
+            </span>
           )}
         </div>
         <p className="text-xs text-gray-700 mt-0.5">

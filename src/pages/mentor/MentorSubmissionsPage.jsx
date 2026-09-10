@@ -1,123 +1,112 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { apiFetch } from '../../api'
-import SubmissionsModal from '../../components/SubmissionsModal'
+import { useLiveSession } from '../../components/LiveSessionProvider'
 
-// Everything students have handed in, across every class this mentor hosts.
-// The per-class modal on the Live Classes page answers "what came in for this
-// class?"; this page answers "what is waiting on me?" — which is the question a
-// mentor actually starts their day with, and the one that's unanswerable if the
-// only way in is opening each class card one at a time.
+// The Submissions page, class by class. One card per class — how many
+// students handed work in, how many still wait on a review, how many joined —
+// and each card opens that class's own page (MentorClassSubmissionsPage):
+// every student who joined, submitted or not, with the review forms. No
+// modals anywhere on this path.
+//
+//   Needs review     — classes with work waiting on the mentor (the default:
+//                      the question a mentor starts the day with)
+//   With submissions — every class anyone submitted to, latest hand-in first
+//   All classes      — every class that has run, live ones on top, so a
+//                      class where nobody submitted can still be opened to
+//                      see who joined and didn't hand anything in
 
-const KIND_ICON = { audio: '🎙', video: '🎬', pdf: '📕', image: '🖼', doc: '📄', other: '📎' }
-
-const STATUS_CHIP = {
-  submitted:         { label: 'Awaiting review', cls: 'bg-amber-100 text-amber-700' },
-  changes_requested: { label: 'Changes asked',   cls: 'bg-orange-100 text-orange-700' },
-  reviewed:          { label: 'Reviewed',        cls: 'bg-emerald-100 text-emerald-700' },
-}
+const VIEWS = [
+  { k: 'pending',   label: 'Needs review' },
+  { k: 'submitted', label: 'With submissions' },
+  { k: 'all',       label: 'All classes' },
+]
 
 const fmtWhen = (d) => (d ? new Date(d).toLocaleString(undefined, {
   weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
 }) : '')
 
+const EMPTY = { classes: [], total: 0, totalPages: 1, pendingClasses: 0 }
+
 export default function MentorSubmissionsPage() {
-  const [data, setData]     = useState(null)
-  const [status, setStatus] = useState('pending')
-  const [page, setPage]     = useState(1)
-  const [error, setError]   = useState('')
-  const [open, setOpen]     = useState(null)   // { id, title } — the class modal
+  const [data, setData]   = useState(null)
+  const [view, setView]   = useState('pending')
+  const [q, setQ]         = useState('')
+  const [needle, setNeedle] = useState('')   // q, debounced — what's actually queried
+  const [page, setPage]   = useState(1)
+  const [error, setError] = useState('')
+  const live = useLiveSession()
+  const session   = live?.session || null
+  const minimized = !!live?.minimized
+
+  // Type-ahead without a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => { setNeedle(q.trim()); setPage(1) }, 300)
+    return () => clearTimeout(t)
+  }, [q])
 
   const load = useCallback(async () => {
     try {
-      const d = await apiFetch(`/api/mentor/class-submissions?status=${status}&page=${page}&limit=20`)
+      const d = await apiFetch(
+        `/api/mentor/class-submissions/classes?view=${view}&page=${page}&limit=20${needle ? `&q=${encodeURIComponent(needle)}` : ''}`,
+      )
       setData(d)
       setError('')
     } catch (e) {
       setError(e.message || 'Could not load submissions')
-      setData({ submissions: [], total: 0, totalPages: 1, pendingTotal: 0 })
+      setData(EMPTY)
     }
-  }, [status, page])
+  }, [view, page, needle])
 
   useEffect(() => { load() }, [load])
 
-  // Reviewing happens in the per-class modal, so returning from it must refresh
-  // this list — a row the mentor just marked reviewed should leave the pending view.
-  const closeModal = () => { setOpen(null); load() }
+  // Minimizing the class brings this page back into view mid-session — the
+  // counts have usually moved since it was last looked at.
+  useEffect(() => { if (minimized) load() }, [minimized, load])
 
-  const switchStatus = (s) => { setStatus(s); setPage(1) }
+  const switchView = (k) => { setView(k); setPage(1) }
+
+  const pendingBadge = data?.pendingClasses || 0
 
   return (
-    <div className="p-4 md:p-8 max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900 mb-1">Student Submissions</h1>
+    // Bottom padding keeps the last card clear of the minimized class window.
+    <div className={`p-4 md:p-8 max-w-4xl mx-auto ${session && minimized ? 'pb-60' : ''}`}>
+      <h1 className="text-2xl font-bold text-gray-900 mb-1">Submissions</h1>
       <p className="text-gray-400 text-sm mb-5">
-        Work handed in during your live classes — voice notes, video answers, PDFs and photos.
+        Work handed in during your live classes, class by class. Open a class to see who submitted, who didn't, and to review.
       </p>
 
-      <div className="flex gap-1.5 p-1 bg-gray-100 rounded-xl mb-4 max-w-xs">
-        {[
-          { k: 'pending',  label: `Pending${data?.pendingTotal ? ` (${data.pendingTotal})` : ''}` },
-          { k: 'reviewed', label: 'Reviewed' },
-          { k: 'all',      label: 'All' },
-        ].map((t) => (
-          <button key={t.k} onClick={() => switchStatus(t.k)}
-            className={`flex-1 text-xs font-semibold py-2 rounded-lg transition ${
-              status === t.k ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-            {t.label}
-          </button>
-        ))}
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-4">
+        <div className="flex gap-1 p-1 bg-gray-100 rounded-xl overflow-x-auto sm:max-w-md sm:flex-1">
+          {VIEWS.map((t) => (
+            <button key={t.k} onClick={() => switchView(t.k)}
+              className={`flex-1 whitespace-nowrap text-xs font-semibold px-3 py-2 rounded-lg transition ${
+                view === t.k ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+              {t.label}
+              {t.k === 'pending' && pendingBadge > 0 && (
+                <span className="ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white">{pendingBadge}</span>
+              )}
+            </button>
+          ))}
+        </div>
+        <input
+          type="search" value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="Search class title…"
+          className="sm:w-64 text-sm text-gray-900 bg-white border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-teal-400"
+        />
       </div>
 
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
 
       {data === null ? (
         <div className="bg-white rounded-2xl p-8 text-center text-gray-400 text-sm">Loading…</div>
-      ) : !data.submissions.length ? (
-        <div className="bg-white rounded-2xl p-8 text-center">
-          <p className="text-gray-700 font-semibold mb-1">
-            {status === 'pending' ? 'Nothing waiting on you' : 'Nothing here yet'}
-          </p>
-          <p className="text-gray-400 text-sm">
-            {status === 'pending'
-              ? 'When a student submits work in one of your classes, it lands here.'
-              : 'Submissions you have reviewed will show up here.'}
-          </p>
-        </div>
+      ) : !data.classes.length ? (
+        <EmptyState view={view} needle={needle} />
       ) : (
         <div className="space-y-2">
-          {data.submissions.map((s) => {
-            const chip = STATUS_CHIP[s.status] || STATUS_CHIP.submitted
-            return (
-              <button key={s._id} onClick={() => setOpen({ id: s.classId, title: s.classTitle })}
-                className="w-full text-left bg-white rounded-2xl shadow-sm p-4 flex items-center gap-3 hover:shadow-md transition">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <span className="text-sm font-semibold text-gray-900 truncate">{s.studentName || 'Student'}</span>
-                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${chip.cls}`}>{chip.label}</span>
-                    {s.submittedDuringClass && (
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-red-50 text-red-600 uppercase">in class</span>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-600 truncate">{s.classTitle}</p>
-                  {s.chapter?.name && (
-                    <p className="text-[11px] text-indigo-500 truncate mt-0.5">
-                      📖 {s.subject?.name ? `${s.subject.name} · ` : ''}{s.chapter.name}{s.unit?.name ? ` · ${s.unit.name}` : ''}
-                    </p>
-                  )}
-                  <p className="text-[11px] text-gray-400 mt-1">
-                    {s.files.length} file{s.files.length === 1 ? '' : 's'} · {fmtWhen(s.lastFileAt)}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1.5 flex-shrink-0">
-                  {s.files.slice(0, 4).map((f) => <span key={f.key} title={f.name}>{KIND_ICON[f.kind] || '📎'}</span>)}
-                  {s.marks != null && (
-                    <span className="text-xs font-bold text-gray-900 ml-1">
-                      {s.marks}{s.totalMarks != null ? `/${s.totalMarks}` : ''}
-                    </span>
-                  )}
-                </div>
-              </button>
-            )
-          })}
+          {data.classes.map((c) => (
+            <ClassCard key={c._id} cls={c} hostingNow={session?.classId === c._id} />
+          ))}
         </div>
       )}
 
@@ -134,16 +123,69 @@ export default function MentorSubmissionsPage() {
           </button>
         </div>
       )}
-
-      {open && (
-        <SubmissionsModal
-          classId={open.id}
-          title={open.title}
-          apiFetch={apiFetch}
-          accent="teal"
-          onClose={closeModal}
-        />
-      )}
     </div>
+  )
+}
+
+function EmptyState({ view, needle }) {
+  const [title, body] = needle
+    ? [`No class matches "${needle}"`, 'Try a different word from the class title.']
+    : view === 'pending'
+      ? ['Nothing waiting on you', 'When a student submits work in one of your classes, it lands here.']
+      : view === 'submitted'
+        ? ['No submissions yet', 'Classes show up here once a student hands something in.']
+        : ['No classes have run yet', 'Every class you host appears here once it has started.']
+  return (
+    <div className="bg-white rounded-2xl p-8 text-center">
+      <p className="text-gray-700 font-semibold mb-1">{title}</p>
+      <p className="text-gray-400 text-sm">{body}</p>
+    </div>
+  )
+}
+
+// One class. The whole card is the link; the right-hand side says at a glance
+// whether anything is waiting, and how many of those who joined handed in.
+function ClassCard({ cls: c, hostingNow }) {
+  const { total, pending, joined } = c.counts
+  const where = [c.room?.label, c.track?.label].filter(Boolean).join(' · ')
+  const work  = [c.subject?.name, c.chapter?.name, c.unit?.name].filter(Boolean).join(' · ')
+  const when  = fmtWhen(c.startedAt || c.scheduledStart)
+
+  const verdict = pending > 0
+    ? { label: `${pending} to review`, cls: 'bg-amber-100 text-amber-700' }
+    : total > 0
+      ? { label: 'All reviewed', cls: 'bg-emerald-100 text-emerald-700' }
+      : { label: 'No submissions', cls: 'bg-gray-100 text-gray-500' }
+
+  return (
+    <Link to={`/mentor/submissions/${c._id}`}
+      className="block bg-white rounded-2xl shadow-sm p-4 hover:shadow-md transition">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            {c.status === 'live' && (
+              <span className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-red-50 text-red-600 uppercase">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />live
+              </span>
+            )}
+            <p className="text-sm font-semibold text-gray-900 truncate">{c.title}</p>
+            {hostingNow && (
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 uppercase">you're hosting</span>
+            )}
+          </div>
+          <p className="text-xs text-gray-500 truncate mt-0.5">{[where, work].filter(Boolean).join(' — ')}</p>
+          <p className="text-[11px] text-gray-400 mt-0.5">
+            {when}{c.lastFileAt ? ` · last hand-in ${fmtWhen(c.lastFileAt)}` : ''}
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${verdict.cls}`}>{verdict.label}</span>
+          <span className="text-[11px] text-gray-500 whitespace-nowrap">
+            <b className="text-gray-900">{total}</b> submitted{joined ? ` · ${joined} joined` : ''}
+          </span>
+        </div>
+        <span className="text-gray-300 text-lg flex-shrink-0" aria-hidden="true">›</span>
+      </div>
+    </Link>
   )
 }

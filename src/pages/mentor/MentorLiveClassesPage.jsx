@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import { groupRoomSlots, slotPrimaryClass, trackLabelOf } from '../../utils/roomSlots'
 import AttendanceModal from '../../components/AttendanceModal'
-import SubmissionsModal from '../../components/SubmissionsModal'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
 import DateField from '../../components/DateField'
 import { useLiveSession } from '../../components/LiveSessionProvider'
@@ -587,7 +587,6 @@ export default function MentorLiveClassesPage() {
   const [error, setError]       = useState('')
   const [syllabus, setSyllabus]     = useState(null) // subjects with chapter/unit completion
   const [attendance, setAttendance] = useState(null)
-  const [submissions, setSubmissions] = useState(null) // { id, title } while the modal is open
   const [covered, setCovered]       = useState(null)   // classId while the "what did this class finish" modal is open
   const [coveredBusy, setCoveredBusy] = useState(null) // `${chapterId}:${unitId}` while a tick is in flight
   const [tab, setTab]               = useState('list') // 'list' | 'calendar'
@@ -597,6 +596,12 @@ export default function MentorLiveClassesPage() {
   const [schedule, setSchedule]     = useState(false)  // schedule-a-class modal open
 
   const { session, minimized, startOrEnter: enterSession, subCounts, setSubCounts } = useLiveSession()
+  const navigate = useNavigate()
+
+  // A class's submissions are a PAGE (who joined, who submitted, who didn't,
+  // with the review forms), not a modal over this list. A running class keeps
+  // going across the navigation — the room lives in the layout.
+  const openSubmissions = (cls) => navigate(`/mentor/submissions/${cls._id}`)
 
   // One card per room slot: the tracks of a room in the same period collapse
   // into a single entry with one Start button (see utils/roomSlots.js).
@@ -888,7 +893,7 @@ export default function MentorLiveClassesPage() {
               onStart={(cls) => { close(); startOrEnter(cls) }}
               onEnd={(cls) => { close(); endClass(cls) }}
               onAttendance={(cls) => { close(); openAttendance(cls) }}
-              onSubmissions={(cls) => { close(); setSubmissions({ id: cls._id, title: cls.title }) }} />
+              onSubmissions={(cls) => { close(); openSubmissions(cls) }} />
           )}
         />
       ) : classes === null ? (
@@ -952,7 +957,7 @@ export default function MentorLiveClassesPage() {
                     <MentorSlotActions slot={s} busyId={busyId} sessionClassId={session?.classId}
                       subCounts={subCounts} showTracks={!s.isGroup}
                       onStart={startOrEnter} onEnd={endClass} onAttendance={openAttendance}
-                      onSubmissions={(cls) => setSubmissions({ id: cls._id, title: cls.title })} />
+                      onSubmissions={openSubmissions} />
                   </div>
                 </div>
 
@@ -980,7 +985,7 @@ export default function MentorLiveClassesPage() {
                           )}
                           <TrackActions cls={c} busyId={busyId} subCount={subCounts[c._id]} compact
                             onEnd={endClass} onAttendance={openAttendance}
-                            onSubmissions={(cls) => setSubmissions({ id: cls._id, title: cls.title })} />
+                            onSubmissions={openSubmissions} />
                         </div>
                       </div>
                     ))}
@@ -1038,17 +1043,6 @@ export default function MentorLiveClassesPage() {
           meta={attendance.meta} onToggleRecord={updateAttendanceRecord} onClose={() => setAttendance(null)} />
       )}
 
-      {/* Student work handed in for this class */}
-      {submissions && (
-        <SubmissionsModal
-          classId={submissions.id}
-          title={submissions.title}
-          apiFetch={apiFetch}
-          accent="teal"
-          onCountsChange={(counts) => setSubCounts((c) => ({ ...c, [submissions.id]: counts }))}
-          onClose={() => setSubmissions(null)}
-        />
-      )}
     </div>
   )
 }
