@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../api'
 
 // Lazy-loaded so the LiveKit bundle only loads when a class is actually hosted.
@@ -27,12 +28,37 @@ export default function LiveSessionProvider({ children }) {
   const [hostError, setHostError]   = useState('')  // switch/mirror failures, surfaced inside the room
   const toastTimer = useRef(null)
   const audioCtxRef = useRef(null)
+  const navigate = useNavigate()
 
   // A late "disconnected" event from a torn-down room must not evict us from the
   // one we just switched into — see leaveFrom().
   const sessionRef = useRef(null)
   useEffect(() => { sessionRef.current = session }, [session])
   useEffect(() => () => clearTimeout(toastTimer.current), [])
+
+  // The in-room 📎 Submissions button: shrink the room to its corner window and
+  // go to this class's submissions page (who joined, who submitted, who hasn't).
+  // The room stays mounted here at layout level, so the class keeps running.
+  const openSubmissions = useCallback(() => {
+    const s = sessionRef.current
+    if (!s?.classId) return
+    setMinimized(true)
+    navigate(`/mentor/submissions/${s.classId}`)
+  }, [navigate])
+
+  // Seed the badge on that button when a session starts or switches track: the
+  // push events only carry deltas, and a host who entered from the Dashboard
+  // (not the Live Classes page, which loads counts for its cards) has none yet.
+  const sessionClassId = session?.classId || null
+  useEffect(() => {
+    const id = sessionClassId
+    if (!id) return undefined
+    let alive = true
+    apiFetch(`/api/live-classes/manage/submission-counts?ids=${id}`)
+      .then((d) => { if (alive && d?.counts?.[id]) setSubCounts((c) => ({ ...c, [id]: d.counts[id] })) })
+      .catch(() => { /* badge-only data */ })
+    return () => { alive = false }
+  }, [sessionClassId])
 
   // Soft two-note "ding" for a raised hand, synthesized so there's no audio
   // asset to load. The AudioContext is created lazily on first use — by then
@@ -217,7 +243,7 @@ export default function LiveSessionProvider({ children }) {
   }
 
   return (
-    <LiveSessionContext.Provider value={{ session, minimized, toggleMinimize, startOrEnter, subCounts, setSubCounts }}>
+    <LiveSessionContext.Provider value={{ session, minimized, toggleMinimize, startOrEnter, openSubmissions, subCounts, setSubCounts }}>
       {children}
 
       {/* While the room is minimized its in-room toast overlay is hidden, so
@@ -251,6 +277,8 @@ export default function LiveSessionProvider({ children }) {
             onHandEvent={onHandEvent}
             minimized={minimized}
             onToggleMinimize={toggleMinimize}
+            onOpenSubmissions={openSubmissions}
+            submissionsPending={subCounts[session.classId]?.pending || 0}
             onLeave={() => leaveFrom(session.token)}
           />
         </Suspense>

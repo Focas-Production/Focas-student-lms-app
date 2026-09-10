@@ -22,6 +22,7 @@ import MentorProfilePage from '../pages/mentor/MentorProfilePage'
 import MentorTestSeriesPage from '../pages/mentor/MentorTestSeriesPage'
 import MentorLiveClassesPage from '../pages/mentor/MentorLiveClassesPage'
 import MentorSubmissionsPage from '../pages/mentor/MentorSubmissionsPage'
+import MentorClassSubmissionsPage from '../pages/mentor/MentorClassSubmissionsPage'
 import MentorSyllabusPage from '../pages/mentor/MentorSyllabusPage'
 import MentorLibraryPage from '../pages/mentor/MentorLibraryPage'
 import TrackRoomPage from '../pages/TrackRoomPage'
@@ -69,6 +70,9 @@ export default function AppRouter() {
         <Route index           element={<MentorDashboard />} />
         <Route path="live-classes" element={<MentorLiveClassesPage />} />
         <Route path="submissions" element={<MentorSubmissionsPage />} />
+        {/* One class's roster: who joined, who submitted, who hasn't. Reached
+            from the 📎 Submissions button inside a live class. */}
+        <Route path="submissions/:classId" element={<MentorClassSubmissionsPage />} />
         <Route path="syllabus" element={<MentorSyllabusPage />} />
         <Route path="test-series" element={<MentorTestSeriesPage />} />
         <Route path="library" element={<MentorLibraryPage />} />

@@ -86,6 +86,119 @@ const AUTO_NEEDS_MEDIA = 'Auto pop-out can’t fire while your microphone is off
 const AUTO_NEEDS_HTTPS = 'Auto pop-out only works on an https page (a Chrome rule) — it will on the live site, but not on this address. '
   + '"Pop out" works here too.'
 
+// ── The minimized corner window: movable and resizable ──
+// A fixed corner window covers whatever sits under it — on the submissions
+// page that was the review form's buttons. So the window can be dragged by
+// its title bar anywhere on screen and resized from any corner, and the
+// place and size the host settles on are remembered per browser. Always kept
+// fully inside the viewport (a saved box from a bigger screen is pulled in).
+const MINI_BOX_KEY = 'focas.liveMini.box'
+const MINI_MIN = { w: 220, h: 140 }
+const MINI_MARGIN = 16
+const MINI_CORNERS = ['nw', 'ne', 'sw', 'se']
+
+function defaultMiniBox() {
+  const vw = window.innerWidth, vh = window.innerHeight
+  const w = Math.min(320, vw - 2 * MINI_MARGIN)
+  const h = 200
+  return { x: vw - w - MINI_MARGIN, y: vh - h - MINI_MARGIN, w, h }
+}
+
+// Fit a box to the viewport: never smaller than MINI_MIN (unless the screen
+// itself is), never larger than the screen, never off its edge.
+function clampMiniBox(b) {
+  const vw = window.innerWidth, vh = window.innerHeight
+  const w = Math.min(Math.max(b.w, Math.min(MINI_MIN.w, vw)), vw)
+  const h = Math.min(Math.max(b.h, Math.min(MINI_MIN.h, vh)), vh)
+  return {
+    x: Math.max(0, Math.min(b.x, vw - w)),
+    y: Math.max(0, Math.min(b.y, vh - h)),
+    w, h,
+  }
+}
+
+function readMiniBox() {
+  try {
+    const s = JSON.parse(localStorage.getItem(MINI_BOX_KEY) || 'null')
+    if (s && [s.x, s.y, s.w, s.h].every(Number.isFinite)) return clampMiniBox(s)
+  } catch { /* private mode / bad value */ }
+  return clampMiniBox(defaultMiniBox())
+}
+
+// Position + size of the corner window, with pointer gestures for moving it
+// (title bar) and resizing it (corner handles). `active` — the window is
+// currently minimized; the box is only persisted and re-fitted while it is.
+function useMiniWindowBox(active) {
+  const [rawBox, setBox] = useState(readMiniBox)
+  // Fitted at render time (pure, cheap), so a box saved on a bigger screen —
+  // or one that drifted while the window was full-screen — is pulled into
+  // the viewport the moment it's shown, with no state write in an effect.
+  const box = clampMiniBox(rawBox)
+  const boxRef = useRef(box)
+  useEffect(() => { boxRef.current = box }, [box])
+
+  useEffect(() => {
+    if (!active) return undefined
+    const onResize = () => setBox((b) => clampMiniBox(b))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [active])
+
+  // Persist by value — `box` is rebuilt every render, its numbers rarely change.
+  const { x, y, w, h } = box
+  useEffect(() => {
+    if (!active) return
+    try { localStorage.setItem(MINI_BOX_KEY, JSON.stringify({ x, y, w, h })) } catch { /* private mode */ }
+  }, [x, y, w, h, active])
+
+  // One pointer gesture (mouse, touch or pen): `apply(dx, dy, start)` returns
+  // the box for the pointer's current offset from where it went down. Pointer
+  // capture keeps the gesture alive when the pointer outruns the element.
+  const gesture = useCallback((apply) => (e) => {
+    if (e.button != null && e.button !== 0) return
+    if (e.target.closest?.('button, a, input')) return   // the title-bar buttons still click
+    e.preventDefault()
+    const el = e.currentTarget
+    const start = { ...boxRef.current, px: e.clientX, py: e.clientY }
+    try { el.setPointerCapture(e.pointerId) } catch { /* not supported */ }
+    const move = (ev) => setBox(clampMiniBox(apply(ev.clientX - start.px, ev.clientY - start.py, start)))
+    const stop = () => {
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', stop)
+      el.removeEventListener('pointercancel', stop)
+      try { el.releasePointerCapture(e.pointerId) } catch { /* already released */ }
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', stop)
+    el.addEventListener('pointercancel', stop)
+  }, [])
+
+  const onDragStart = useMemo(() => gesture((dx, dy, s) => ({ ...s, x: s.x + dx, y: s.y + dy })), [gesture])
+
+  // Resizing from a corner keeps the OPPOSITE corner still, and stops at the
+  // minimum size and the screen edge without letting that fixed corner move.
+  const onResizeStart = useMemo(() => Object.fromEntries(MINI_CORNERS.map((corner) => [corner, gesture((dx, dy, s) => {
+    const vw = window.innerWidth, vh = window.innerHeight
+    let { x, y, w, h } = s
+    if (corner.includes('e')) w = Math.min(s.w + dx, vw - s.x)
+    if (corner.includes('s')) h = Math.min(s.h + dy, vh - s.y)
+    if (corner.includes('w')) { w = Math.min(s.w - dx, s.x + s.w); x = s.x + s.w - w }
+    if (corner.includes('n')) { h = Math.min(s.h - dy, s.y + s.h); y = s.y + s.h - h }
+    if (w < MINI_MIN.w) { if (corner.includes('w')) x -= MINI_MIN.w - w; w = MINI_MIN.w }
+    if (h < MINI_MIN.h) { if (corner.includes('n')) y -= MINI_MIN.h - h; h = MINI_MIN.h }
+    return { x, y, w, h }
+  })])), [gesture])
+
+  return { box, onDragStart, onResizeStart }
+}
+
+const MINI_CORNER_STYLE = {
+  nw: { top: 0, left: 0, cursor: 'nwse-resize' },
+  ne: { top: 0, right: 0, cursor: 'nesw-resize' },
+  sw: { bottom: 0, left: 0, cursor: 'nesw-resize' },
+  se: { bottom: 0, right: 0, cursor: 'nwse-resize' },
+}
+
 // Only pulled in when a student actually opens the submit panel — it carries the
 // recorder, and the class stage shouldn't pay for it on every join.
 const SubmitWorkPanel = lazy(() => import('./SubmitWorkPanel'))
@@ -119,6 +232,12 @@ const NOTIFY_TOPIC = 'focas-notify'
 // per browser) Chrome pops it out by itself when the host switches tabs and
 // closes it when they return. See hooks/usePictureInPicture.js.
 //
+// Optional host-only: onOpenSubmissions — adds a 📎 Submissions button to the
+// bottom bar that opens the per-class submissions PAGE (who joined, who has
+// handed work in, who hasn't). The caller decides how to get there — the
+// mentor portal minimizes the room and navigates; a standalone track page
+// opens a tab. submissionsPending puts the awaiting-review count on the badge.
+//
 // Optional student-only props:
 //   onRaiseHand, handRaised — the 🖐 toggle; the server relays it to the host
 //   submitClass — { id, title } enables the 📎 submit panel inside the room
@@ -150,7 +269,7 @@ function LiveRoomInner({
   token, wsUrl, title, subtitle, onLeave, canHost, hostIdentity,
   tracks, activeClassId, onSwitchTrack, switching, mirrors, onToggleMirror, notice,
   onHandEvent, toast, onRaiseHand, handRaised, submitClass, classId,
-  minimized, onToggleMinimize,
+  minimized, onToggleMinimize, onOpenSubmissions, submissionsPending = 0,
 }) {
   // Which class this room is showing — hosts already pass activeClassId and
   // students submitClass, so the timer works even where classId isn't wired.
@@ -323,14 +442,15 @@ function LiveRoomInner({
     }
   }
 
-  // Minimized: a floating corner window above everything (including modals), so
-  // the class stays watchable while the mentor works the page behind it. The
-  // SAME element tree renders in both modes — only styles change — so LiveKit
-  // never reconnects on toggle.
+  // Minimized: a floating window above everything (including modals), so the
+  // class stays watchable while the mentor works the page behind it. Movable
+  // and resizable — see useMiniWindowBox. The SAME element tree renders in
+  // both modes — only styles change — so LiveKit never reconnects on toggle.
+  const mini = useMiniWindowBox(!!minimized)
   const shellStyle = minimized
     ? {
-        position: 'fixed', right: 16, bottom: 16, zIndex: 60,
-        width: 'min(320px, calc(100vw - 24px))', height: 200,
+        position: 'fixed', left: mini.box.x, top: mini.box.y, zIndex: 60,
+        width: mini.box.w, height: mini.box.h,
         background: '#0b0b0f', borderRadius: 14, overflow: 'hidden',
         border: '1px solid rgba(255,255,255,0.18)',
         boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
@@ -382,6 +502,29 @@ function LiveRoomInner({
       {pipButton}
       {timerClassId && (
         <ParticipantsButton open={participantsOpen} hands={hands} onClick={() => setParticipantsOpen((v) => !v)} />
+      )}
+      {onOpenSubmissions && (
+        <button
+          type="button"
+          className="lk-button"
+          onClick={onOpenSubmissions}
+          title="Submissions — see who has handed in work for this class and who hasn't. The class keeps running in a small window while you review."
+          aria-label={`Submissions${submissionsPending ? `, ${submissionsPending} awaiting review` : ''}`}
+        >
+          <span aria-hidden="true">📎</span>
+          <span className="focas-ctl-label focas-ctl-label-wide">Submissions</span>
+          {submissionsPending > 0 && (
+            <span
+              title={`${submissionsPending} awaiting review`}
+              style={{
+                background: '#d97706', color: '#fff',
+                fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 999, marginLeft: 4,
+              }}
+            >
+              {submissionsPending}
+            </span>
+          )}
+        </button>
       )}
       {onSwitchTrack && (
         <TrackSwitcher
@@ -455,14 +598,20 @@ function LiveRoomInner({
         data-lk-theme="default"
         style={{ height: minimized ? '100%' : '100dvh' }}
       >
-        {/* Compact header while minimized: title + expand. Everything else
-            (switcher, toasts, notices) lives on the page behind the window. */}
+        {/* Compact header while minimized: title + expand — and the handle to
+            drag the window around by. Everything else (switcher, toasts,
+            notices) lives on the page behind the window. */}
         {minimized && (
-          <div style={{
-            position: 'absolute', top: 0, left: 0, right: 0, zIndex: 30,
-            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
-            background: 'linear-gradient(rgba(0,0,0,0.72), rgba(0,0,0,0))',
-          }}>
+          <div
+            onPointerDown={mini.onDragStart}
+            onDoubleClick={onToggleMinimize}
+            title="Drag to move · double-click to go back to full screen"
+            style={{
+              position: 'absolute', top: 0, left: 0, right: 0, zIndex: 30,
+              display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px',
+              background: 'linear-gradient(rgba(0,0,0,0.72), rgba(0,0,0,0))',
+              cursor: 'move', touchAction: 'none', userSelect: 'none',
+            }}>
             <span style={{
               flex: 1, color: '#fff', fontSize: 11, fontWeight: 600,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -651,6 +800,31 @@ function LiveRoomInner({
             in that bar (barControls above), never floating over the tiles. */}
         <ClassStage compact={!!minimized} extraControls={barControls} hands={canHost ? hands : []} />
       </LiveKitRoom>
+
+      {/* Resize grips on the four corners of the minimized window. Outside
+          <LiveKitRoom> so they sit above its stage; the top two overlap the
+          title bar's ends and win there (pointer-down on a grip resizes,
+          anywhere else on the bar drags). */}
+      {minimized && MINI_CORNERS.map((corner) => (
+        <div
+          key={corner}
+          onPointerDown={mini.onResizeStart[corner]}
+          title="Drag to resize"
+          aria-hidden="true"
+          style={{
+            position: 'absolute', width: 18, height: 18, zIndex: 31,
+            touchAction: 'none', ...MINI_CORNER_STYLE[corner],
+          }}
+        >
+          {/* A small visible grip, so the corners read as resizable. */}
+          <span style={{
+            position: 'absolute', inset: 4, borderRadius: 2,
+            borderColor: 'rgba(255,255,255,0.55)', borderStyle: 'solid', borderWidth: 0,
+            ...(corner.includes('n') ? { borderTopWidth: 2 } : { borderBottomWidth: 2 }),
+            ...(corner.includes('w') ? { borderLeftWidth: 2 } : { borderRightWidth: 2 }),
+          }} />
+        </div>
+      ))}
     </div>
   )
 }

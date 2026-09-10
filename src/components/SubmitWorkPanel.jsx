@@ -442,18 +442,34 @@ export default function SubmitWorkPanel({
                 </p>
                 <div className="space-y-1.5">
                   {visibleSubmitted.map((f) => (
-                    <div key={f.key} className="flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200 bg-gray-50">
-                      <span>{KIND_ICON[f.kind] || '📎'}</span>
-                      <button onClick={() => openFile(f.key)} className="text-xs text-gray-900 font-medium truncate flex-1 text-left hover:underline">
-                        {f.name}
-                      </button>
-                      <span className="text-[10px] text-gray-400 flex-shrink-0">
-                        {f.durationMs ? fmtClock(f.durationMs) : fmtBytes(f.size)}
-                      </span>
-                      {canSubmit && !locked && (
-                        <button onClick={() => removeSubmitted(f.key)} disabled={busy}
-                          title="Remove this file"
-                          className="text-gray-300 hover:text-red-500 text-lg leading-none disabled:opacity-40">×</button>
+                    // A file the mentor has graded on its own turns green and
+                    // shows its marks; its feedback sits underneath. Graded
+                    // files can't be removed (the server refuses too).
+                    <div key={f.key} className={`rounded-xl border ${f.review ? 'border-emerald-200 bg-emerald-50/50' : 'border-gray-200 bg-gray-50'}`}>
+                      <div className="flex items-center gap-2 px-3 py-2">
+                        <span>{KIND_ICON[f.kind] || '📎'}</span>
+                        <button onClick={() => openFile(f.key)} className="text-xs text-gray-900 font-medium truncate flex-1 text-left hover:underline">
+                          {f.name}
+                        </button>
+                        <span className="text-[10px] text-gray-400 flex-shrink-0">
+                          {f.durationMs ? fmtClock(f.durationMs) : fmtBytes(f.size)}
+                        </span>
+                        {f.review && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 flex-shrink-0"
+                            title="Reviewed by your mentor">
+                            ✓ {f.review.marks != null
+                              ? `${f.review.marks}${f.review.totalMarks != null ? `/${f.review.totalMarks}` : ''}`
+                              : 'Reviewed'}
+                          </span>
+                        )}
+                        {canSubmit && !locked && !f.review && (
+                          <button onClick={() => removeSubmitted(f.key)} disabled={busy}
+                            title="Remove this file"
+                            className="text-gray-300 hover:text-red-500 text-lg leading-none disabled:opacity-40">×</button>
+                        )}
+                      </div>
+                      {f.review?.notes && (
+                        <p className="px-3 pb-2 -mt-0.5 text-[11px] text-emerald-800 whitespace-pre-wrap">💬 {f.review.notes}</p>
                       )}
                     </div>
                   ))}

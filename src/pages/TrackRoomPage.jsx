@@ -118,6 +118,12 @@ export default function TrackRoomPage() {
           subtitle={session.subtitle}
           onRaiseHand={!isHost && session.classId ? toggleHand : undefined}
           handRaised={handRaised}
+          // No layout behind this page to minimize into, so a mentor's
+          // Submissions button opens the class's page in a new tab instead —
+          // navigating away here would unmount the room and leave the class.
+          onOpenSubmissions={role === 'mentor' && session.classId
+            ? () => window.open(`/mentor/submissions/${session.classId}`, '_blank', 'noopener')
+            : undefined}
           onLeave={(info) => leaveFrom(session.token, info)}
         />
       </Suspense>
