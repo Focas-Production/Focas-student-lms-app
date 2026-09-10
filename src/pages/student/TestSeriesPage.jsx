@@ -21,12 +21,29 @@ function normalizeUrl(raw) {
   return `https://${u}`
 }
 
+// Answer sheet rules — mirrored by the server (testSeriesController): one PDF, ≤ 25 MB.
+const PDF_MIME = 'application/pdf'
+const MAX_PDF_BYTES = 25 * 1024 * 1024
+const PDF_ONLY_MSG = 'Only PDF files are accepted — please scan your answer sheet into a single PDF'
+
+// Returns an error string for a picked answer file, or '' when it's acceptable.
+function validateAnswerPdf(file) {
+  if (!file) return 'Please select your answer sheet PDF'
+  const isPdf = /\.pdf$/i.test(file.name) && (!file.type || file.type === PDF_MIME)
+  if (!isPdf) return PDF_ONLY_MSG
+  if (file.size <= 0) return 'The selected file is empty'
+  if (file.size > MAX_PDF_BYTES) return 'Your PDF exceeds the 25 MB limit'
+  return ''
+}
+
 // PUT a file straight to its presigned R2 URL — bytes never touch our server.
-async function putToR2(uploadUrl, file) {
+// The presigned URL signs the Content-Type, so we must send exactly what the
+// server signed for (`contentType`), not whatever the browser guessed.
+async function putToR2(uploadUrl, file, contentType) {
   const res = await fetch(uploadUrl, {
     method: 'PUT',
     body: file,
-    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    headers: { 'Content-Type': contentType || file.type || 'application/octet-stream' },
   })
   if (!res.ok) throw new Error(`Upload failed for ${file.name}`)
 }
@@ -267,7 +284,7 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
   const [agreed, setAgreed] = useState(false)
   const endTs = useMemo(() => new Date(attempt.startedAt).getTime() + attempt.durationMin * 60 * 1000, [attempt])
   const [now, setNow] = useState(Date.now())
-  const [files, setFiles] = useState([])
+  const [file, setFile] = useState(null)     // the single answer-sheet PDF
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [paper, setPaper] = useState(null)        // { blobUrl } for the question-paper viewer
@@ -306,27 +323,39 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
   const mm = String(Math.floor(remainingMs / 60000)).padStart(2, '0')
   const ss = String(Math.floor((remainingMs % 60000) / 1000)).padStart(2, '0')
 
+  // A picked file is validated immediately so the student sees "PDF only" before
+  // the timer-gated submit, not after. Anything invalid is dropped from the input.
+  const onPickFile = (e) => {
+    const picked = e.target.files?.[0] || null
+    const msg = validateAnswerPdf(picked)
+    if (msg) { setFile(null); setError(msg); e.target.value = ''; return }
+    setFile(picked); setError('')
+  }
+
   const handleSubmit = useCallback(async () => {
-    if (!files.length) { setError('Please select at least one file'); return }
+    const msg = validateAnswerPdf(file)
+    if (msg) { setError(msg); return }
     setBusy(true); setError('')
     try {
-      // 1. ask server for presigned PUT urls
+      // 1. ask server for a presigned PUT url for the single PDF
       const { uploads } = await apiFetch('/api/test-series/presign-upload', {
         method: 'POST',
         body: JSON.stringify({
           contentId: attempt.contentId,
-          files: files.map(f => ({ name: f.name, contentType: f.type, size: f.size })),
+          files: [{ name: file.name, contentType: PDF_MIME, size: file.size }],
         }),
       })
-      // 2. upload each file directly to R2
-      await Promise.all(uploads.map((u, i) => putToR2(u.uploadUrl, files[i])))
-      // 3. record the submission with the resulting keys
+      const u = uploads?.[0]
+      if (!u?.uploadUrl) throw new Error('Could not prepare the upload. Please try again.')
+      // 2. upload the PDF directly to R2 with the signed content type
+      await putToR2(u.uploadUrl, file, u.contentType || PDF_MIME)
+      // 3. record the submission with the resulting key
       await apiFetch('/api/test-series/submit', {
         method: 'POST',
         body: JSON.stringify({
           contentId: attempt.contentId,
           startedAt: attempt.startedAt,
-          files: uploads.map(u => ({ key: u.key, name: u.name, size: u.size, contentType: u.contentType })),
+          files: [{ key: u.key, name: u.name, size: u.size, contentType: u.contentType || PDF_MIME }],
         }),
       })
       onSubmitted()
@@ -335,7 +364,7 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
     } finally {
       setBusy(false)
     }
-  }, [files, attempt, onSubmitted])
+  }, [file, attempt, onSubmitted])
 
   // Instruction screen (before Agree)
   if (!agreed) {
@@ -353,7 +382,7 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
             <li>The timer starts as soon as you press <strong>I Agree</strong>.</li>
             <li>The <strong>question paper opens on screen</strong> as soon as the timer starts — read it there and write your answers on paper.</li>
             <li>The <strong>upload option unlocks only after the timer ends</strong>.</li>
-            <li>You may upload only one file (photo, PDF, Excel — any format).</li>
+            <li>Upload <strong>exactly one PDF file</strong> (max 25 MB) as your answer sheet. Photos and other formats are not accepted — scan all your pages into a single PDF.</li>
           </ul>
         </div>
         <div className="flex gap-2">
@@ -391,18 +420,15 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
       </div>
 
       <fieldset disabled={!timeUp} className={timeUp ? '' : 'opacity-50 pointer-events-none'}>
-        <label className="block text-xs font-semibold text-gray-600 mb-1.5">Answer sheet(s)</label>
-        <input type="file" multiple onChange={e => setFiles([...e.target.files])}
+        <label className="block text-xs font-semibold text-gray-600 mb-1.5">Answer sheet (one PDF, max 25 MB)</label>
+        <input type="file" accept="application/pdf,.pdf" onChange={onPickFile}
           className="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-50 file:text-indigo-700 file:font-semibold file:text-sm" />
-        {files.length > 0 && (
-          <ul className="mt-3 space-y-1">
-            {files.map((f, i) => (
-              <li key={i} className="flex items-center justify-between text-xs bg-gray-50 rounded-lg px-3 py-2">
-                <span className="truncate text-gray-700">{f.name}</span>
-                <span className="text-gray-400 flex-shrink-0 ml-2">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
-              </li>
-            ))}
-          </ul>
+        <p className="text-[11px] text-gray-400 mt-1">Scan all your pages into a single PDF. Photos and other formats are not accepted.</p>
+        {file && (
+          <div className="mt-3 flex items-center justify-between text-xs bg-gray-50 rounded-lg px-3 py-2">
+            <span className="truncate text-gray-700">📄 {file.name}</span>
+            <span className="text-gray-400 flex-shrink-0 ml-2">{(file.size / 1024 / 1024).toFixed(1)} MB</span>
+          </div>
         )}
       </fieldset>
 
@@ -413,7 +439,7 @@ function AttemptView({ attempt, onCancel, onSubmitted }) {
           className="px-4 py-3 rounded-xl border border-gray-200 text-gray-600 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50">
           Cancel
         </button>
-        <button onClick={handleSubmit} disabled={!timeUp || busy || !files.length}
+        <button onClick={handleSubmit} disabled={!timeUp || busy || !file}
           className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400">
           {busy ? 'Uploading…' : 'Submit Answer Sheet'}
         </button>
