@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import { groupRoomSlots, slotPrimaryClass, trackLabelOf } from '../../utils/roomSlots'
@@ -31,13 +31,47 @@ const STATUS_STYLE = {
   cancelled: 'bg-amber-100 text-amber-700',
 }
 
+// Completion state of the chapter/unit a class taught, read off the loaded
+// syllabus — drives the quick-mark button on ended cards and the after-End
+// prompt. null when the class has no booked chapter or the syllabus isn't in.
+function progressFor(syllabus, c) {
+  if (!c.chapter?.chapterId || !syllabus) return null
+  const s = syllabus.find(x => String(x._id) === String(c.subject?.subjectId))
+  const ch = s?.chapters?.find(x => String(x._id) === String(c.chapter.chapterId))
+  if (!ch) return null
+  if (c.unit?.unitId) {
+    const u = (ch.units || []).find(x => String(x._id) === String(c.unit.unitId))
+    return u ? { completed: u.completed, isUnit: true, subjectId: s._id, chapterId: ch._id, unitId: u._id } : null
+  }
+  return { completed: ch.completed, isUnit: false, subjectId: s._id, chapterId: ch._id, unitId: null }
+}
+
+// Did THIS class finish its booked chapter/unit? The class's own answer
+// (LiveClass.outcome, asked when it ends) when it has one; classes that ended
+// before answers were kept fall back to the subject-wide syllabus flag. The
+// card button, the after-End prompt and the "More" checklist all read this,
+// so a chapter finished in an earlier session never looks pre-ticked here.
+const sessionDone = (cls, syllabusDoc) =>
+  (cls.outcome ? cls.outcome.completed === true : !!syllabusDoc?.completed)
+
+// How long after a class ends the catch-up prompt is still worth showing.
+const ENDED_CATCHUP_MS = 2 * 24 * 60 * 60 * 1000
+
+const CheckIcon = ({ className = 'w-4 h-4' }) => (
+  <svg className={className} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="3" aria-hidden="true">
+    <path d="M4.5 10.5l3.5 3.5L15.5 6.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
 // Checklist of everything one ended session finished: the booked chapter/unit
 // plus anything else the host got through — a quick class can close out its
 // chapter and start the next. Ticking an extra item marks it completed in
 // syllabus progress AND ties this class's attendance to it, so students who
 // were present get it completed automatically. The booked item just toggles
 // its syllabus flag — the class teaches it by definition.
-function CoveredModal({ cls, subject, busyKey, error, onToggle, onClose }) {
+// hidePrimary — leave the booked item out (the after-End prompt shows it on
+// its own, above the list).
+function CoveredChecklist({ cls, subject, busyKey, onToggle, hidePrimary = false }) {
   const primaryChapterId = String(cls.chapter?.chapterId || '')
   const primaryUnitId = String(cls.unit?.unitId || '')
   const isPrimary = (chId, uId) => String(chId) === primaryChapterId && String(uId || '') === primaryUnitId
@@ -45,10 +79,11 @@ function CoveredModal({ cls, subject, busyKey, error, onToggle, onClose }) {
     String(x.chapter?.chapterId) === String(chId) && String(x.unit?.unitId || '') === String(uId || ''))
 
   const row = (ch, u) => {
+    if (hidePrimary && isPrimary(ch._id, u?._id)) return null
     const chId = ch._id, uId = u?._id
     const doc = u || ch
     const primary = isPrimary(chId, uId)
-    const coveredHere = primary ? !!doc.completed : isExtra(chId, uId)
+    const coveredHere = primary ? sessionDone(cls, doc) : isExtra(chId, uId)
     const key = `${chId}:${uId || ''}`
     return (
       <label key={key}
@@ -69,6 +104,30 @@ function CoveredModal({ cls, subject, busyKey, error, onToggle, onClose }) {
     )
   }
 
+  if (!subject) {
+    return <p className="text-sm text-gray-400 text-center py-4">Couldn't load this subject's syllabus — try reloading.</p>
+  }
+  if (!(subject.chapters || []).length) {
+    return <p className="text-sm text-gray-400 text-center py-4">This subject has no chapters yet.</p>
+  }
+  return (
+    <div className="space-y-0.5">
+      {subject.chapters.map((ch) => (
+        <Fragment key={ch._id}>
+          {row(ch)}
+          {(ch.units || []).map((u) => row(ch, u))}
+        </Fragment>
+      ))}
+    </div>
+  )
+}
+
+const CHECKLIST_HELP = 'Tick every chapter or unit this session completed. Ticked items are marked done in '
+  + 'syllabus progress, and each student who attended enough of the class gets them '
+  + 'completed automatically. Unticking undoes both.'
+
+// The "＋ More" dialog on an ended class card.
+function CoveredModal({ cls, subject, busyKey, error, onToggle, onClose }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
@@ -81,25 +140,131 @@ function CoveredModal({ cls, subject, busyKey, error, onToggle, onClose }) {
         </div>
         <div className="p-4 overflow-y-auto">
           {error && <p className="text-xs text-red-500 mb-2">{error}</p>}
-          {!subject ? (
-            <p className="text-sm text-gray-400 text-center py-4">Couldn't load this subject's syllabus — try reloading.</p>
-          ) : !(subject.chapters || []).length ? (
-            <p className="text-sm text-gray-400 text-center py-4">This subject has no chapters yet.</p>
-          ) : (
-            <div className="space-y-0.5">
-              {subject.chapters.map((ch) => (
-                <Fragment key={ch._id}>
-                  {row(ch)}
-                  {(ch.units || []).map((u) => row(ch, u))}
-                </Fragment>
-              ))}
-            </div>
+          <CoveredChecklist cls={cls} subject={subject} busyKey={busyKey} onToggle={onToggle} />
+          <p className="text-[11px] text-gray-400 mt-3 leading-relaxed">{CHECKLIST_HELP}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Shown the moment the host ends a class — and once, later, for a class that
+// ended without them pressing End (see the catch-up effect). The one thing a
+// mentor forgets after a session is saying what it finished, so the booked
+// chapter/unit is ONE checkbox row, unticked until they tick it — this
+// class's own answer, never the subject-wide flag (which a previous session
+// on the same chapter may already have set; that case gets a note). Anything
+// extra sits behind "also finished…". Done without a tick means "not
+// finished" and is recorded as the answer.
+//   progress — progressFor(syllabus, cls): the item's ids + syllabus flag, or null
+//   late     — the catch-up variant, for a class that ended on its own
+function ClassEndedModal({ cls, subject, progress: p, busyKey, error, late, onSetDone, onToggle, onClose }) {
+  const [showMore, setShowMore] = useState(false)
+  const hasItem = !!cls.chapter?.chapterId
+  const isUnit = !!cls.unit?.unitId
+  const name = isUnit ? cls.unit?.name : cls.chapter?.name
+  const kind = isUnit ? 'unit' : 'chapter'
+  const done = sessionDone(cls, null)
+  const alreadyOnSyllabus = !done && !!p?.completed
+  const primaryKey = `${cls.chapter?.chapterId || ''}:${cls.unit?.unitId || ''}`
+  const saving = busyKey === primaryKey
+  const busy = !!busyKey
+  const extrasCount = (cls.extraItems || []).length
+  const ran = runDuration(cls)
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={busy ? undefined : onClose}>
+      <div role="dialog" aria-modal="true" aria-labelledby="class-ended-title"
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[88vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}>
+
+        <div className="px-5 pt-5 pb-4 flex items-start gap-3">
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 text-lg font-bold ${
+            late ? 'bg-amber-100 text-amber-700' : 'bg-teal-100 text-teal-700'}`}>
+            {late ? '?' : <CheckIcon className="w-5 h-5" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p id="class-ended-title" className="text-base font-bold text-gray-900">
+              {late ? `Did this class finish its ${kind}?` : 'Class ended'}
+            </p>
+            <p className="text-xs text-gray-600 truncate mt-0.5">{cls.title}</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">
+              {late
+                ? `Ended ${fmtWhen(cls.endedAt)} — you weren't asked at the time.`
+                : `${ran ? `Ran ${ran} · ` : ''}ended ${fmtWhen(cls.endedAt)}`}
+            </p>
+          </div>
+          <button onClick={onClose} disabled={busy} aria-label="Close"
+            className="text-gray-400 hover:text-gray-700 text-2xl leading-none -mt-1 disabled:opacity-40">×</button>
+        </div>
+
+        <div className="px-5 pb-4 overflow-y-auto">
+          {error && (
+            <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{error}</p>
           )}
-          <p className="text-[11px] text-gray-400 mt-3 leading-relaxed">
-            Tick every chapter or unit this session completed. Ticked items are marked done in
-            syllabus progress, and each student who attended enough of the class gets them
-            completed automatically. Unticking undoes both.
+
+          {hasItem ? (
+            <>
+              <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-2">
+                Did you finish the scheduled {kind}?
+              </p>
+              <button type="button" role="checkbox" aria-checked={done} disabled={busy}
+                onClick={() => onSetDone(!done)}
+                className={`w-full text-left rounded-xl border-2 p-3.5 flex items-center gap-3 transition disabled:opacity-60 ${
+                  done ? 'border-teal-500 bg-teal-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                <span className={`w-6 h-6 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition ${
+                  done ? 'bg-teal-600 border-teal-600 text-white' : 'border-gray-300 bg-white'}`}>
+                  {done && <CheckIcon />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-gray-900 truncate">{name}</span>
+                  <span className="block text-xs text-gray-500 truncate">
+                    {[cls.subject?.name, isUnit ? cls.chapter?.name : null].filter(Boolean).join(' · ')}
+                  </span>
+                </span>
+                <span className={`text-[11px] font-semibold flex-shrink-0 ${done ? 'text-teal-700' : 'text-gray-400'}`}>
+                  {saving ? 'Saving…' : done ? 'Completed' : 'Not finished'}
+                </span>
+              </button>
+              {alreadyOnSyllabus && (
+                <p className="mt-2 text-[11px] text-gray-500 leading-relaxed">
+                  ⓘ This {kind} is already marked completed on your syllabus from an earlier session.
+                  Tick only if this class finished it too.
+                </p>
+              )}
+              {done && (
+                <p className="mt-2 text-[11px] text-teal-700 leading-relaxed">
+                  Students who attended enough of this class get it completed automatically.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-gray-500">No chapter was scheduled for this class. Tick anything it finished below.</p>
+          )}
+
+          <div className="mt-4 pt-3 border-t border-gray-100">
+            <button onClick={() => setShowMore((v) => !v)} className="text-xs font-semibold text-teal-700 hover:underline">
+              {showMore
+                ? '− Hide other chapters and units'
+                : `＋ Also finished other chapters or units?${extrasCount ? ` (${extrasCount} ticked)` : ''}`}
+            </button>
+            {showMore && (
+              <div className="mt-2 border border-gray-100 rounded-xl p-2">
+                <CoveredChecklist cls={cls} subject={subject} busyKey={busyKey} onToggle={onToggle} hidePrimary={hasItem} />
+                <p className="text-[11px] text-gray-400 mt-2 px-1 leading-relaxed">{CHECKLIST_HELP}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3">
+          <p className="text-[11px] text-gray-500">
+            {hasItem && (done ? `${isUnit ? 'Unit' : 'Chapter'} marked completed for this class.` : `Nothing ticked — the ${kind} stays unmarked.`)}
           </p>
+          <button onClick={onClose} disabled={busy}
+            className="px-4 py-2 rounded-xl bg-gray-900 text-white text-sm font-semibold hover:bg-black disabled:opacity-60 flex-shrink-0">
+            Done
+          </button>
         </div>
       </div>
     </div>
@@ -364,7 +529,7 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
           return (
             <div>
               <label className={label}>
-                Students <span className="normal-case font-normal">(optional — leave empty to keep it open to all)</span>
+                Students <span className="normal-case font-normal">(optional — leave empty to keep it open to all; only listed students count as allotted)</span>
               </label>
               {cur.students.length > 0 && (
                 <div className="flex flex-wrap gap-1 mb-1.5">
@@ -588,6 +753,10 @@ export default function MentorLiveClassesPage() {
   const [syllabus, setSyllabus]     = useState(null) // subjects with chapter/unit completion
   const [attendance, setAttendance] = useState(null)
   const [covered, setCovered]       = useState(null)   // classId while the "what did this class finish" modal is open
+  const [ended, setEnded]           = useState(null)   // { ...class, late } while the "class ended — what did you finish?" prompt is open
+  // Classes the prompt has already opened for on this page — so closing it
+  // can't re-open it before the answer has round-tripped through the server.
+  const promptedRef = useRef(new Set())
   const [coveredBusy, setCoveredBusy] = useState(null) // `${chapterId}:${unitId}` while a tick is in flight
   const [tab, setTab]               = useState('list') // 'list' | 'calendar'
   const [page, setPage]             = useState(1)
@@ -665,39 +834,39 @@ export default function MentorLiveClassesPage() {
 
   useEffect(() => { loadSyllabus() }, [loadSyllabus])
 
-  // Toggle a chapter/unit's completed state. Server cascades chapter ↔ units.
-  const toggleProgress = async (subjectId, chapterId, unitId, completed) => {
+  // This class's answer to "did it finish the scheduled chapter/unit?" — the
+  // card button, the after-End prompt and the checklist's scheduled row all
+  // come through here. The server marks the syllabus item done the first
+  // time a session completes it, and only undoes that if it was this very
+  // session's tick (see setClassOutcome).
+  const setOutcome = async (cls, completed) => {
     setError('')
+    setCoveredBusy(`${cls.chapter?.chapterId || ''}:${cls.unit?.unitId || ''}`)
     try {
-      await apiFetch(`/api/live-classes/manage/syllabus/${subjectId}/progress`, {
-        method: 'POST',
-        body: JSON.stringify({ chapterId, unitId: unitId || undefined, completed }),
+      await apiFetch(`/api/live-classes/manage/${cls._id}/outcome`, {
+        method: 'POST', body: JSON.stringify({ completed }),
       })
-      await loadSyllabus()
+      await Promise.all([load(), loadSyllabus()])
     } catch (err) {
-      setError(err.message || 'Could not update progress')
+      setError(err.message || 'Could not update')
+    } finally {
+      setCoveredBusy(null)
     }
   }
 
   // Tick/untick one item in the "what did this class finish" checklist. The
-  // booked item only toggles its syllabus flag (same endpoint as the quick-mark
-  // button); an extra item goes through /covered, which also ties this class's
-  // attendance to it so students complete it automatically.
+  // booked item is this class's outcome (same as the card button); an extra
+  // item goes through /covered, which also ties this class's attendance to
+  // it so students complete it automatically.
   const toggleCovered = async (cls, chapterId, unitId, isPrimary, next) => {
+    if (isPrimary) return setOutcome(cls, next)
     setError('')
     setCoveredBusy(`${chapterId}:${unitId || ''}`)
     try {
-      if (isPrimary) {
-        await apiFetch(`/api/live-classes/manage/syllabus/${cls.subject.subjectId}/progress`, {
-          method: 'POST',
-          body: JSON.stringify({ chapterId, unitId: unitId || undefined, completed: next }),
-        })
-      } else {
-        await apiFetch(`/api/live-classes/manage/${cls._id}/covered`, {
-          method: 'POST',
-          body: JSON.stringify({ chapterId, unitId: unitId || undefined, covered: next }),
-        })
-      }
+      await apiFetch(`/api/live-classes/manage/${cls._id}/covered`, {
+        method: 'POST',
+        body: JSON.stringify({ chapterId, unitId: unitId || undefined, covered: next }),
+      })
       await Promise.all([load(), loadSyllabus()])
     } catch (err) {
       setError(err.message || 'Could not update')
@@ -707,18 +876,25 @@ export default function MentorLiveClassesPage() {
   }
 
   // Completion state of the chapter/unit a class taught — for the quick-mark
-  // button on ended class cards.
-  const classProgress = (c) => {
-    if (!c.chapter?.chapterId || !syllabus) return null
-    const s = syllabus.find(x => String(x._id) === String(c.subject?.subjectId))
-    const ch = s?.chapters?.find(x => String(x._id) === String(c.chapter.chapterId))
-    if (!ch) return null
-    if (c.unit?.unitId) {
-      const u = (ch.units || []).find(x => String(x._id) === String(c.unit.unitId))
-      return u ? { completed: u.completed, isUnit: true, subjectId: s._id, chapterId: ch._id, unitId: u._id } : null
-    }
-    return { completed: ch.completed, isUnit: false, subjectId: s._id, chapterId: ch._id, unitId: null }
-  }
+  // button on ended class cards and the after-End prompt.
+  const classProgress = (c) => progressFor(syllabus, c)
+
+  // Catch-up: a class that ended without the host pressing End (the server
+  // closes an abandoned room) never showed the prompt, so its outcome is
+  // still unanswered. Once the list is in, ask about the most recent such
+  // class — not over another dialog, and not one already opened on this
+  // page. Closing the prompt records the answer, so it isn't asked again.
+  useEffect(() => {
+    if (!classes || ended || covered) return
+    const cutoff = Date.now() - ENDED_CATCHUP_MS
+    const due = classes.filter((c) => c.status === 'ended' && c.outcome && !c.outcome.answeredAt && !c.outcome.completed
+      && c.chapter?.chapterId && c.subject?.subjectId
+      && c.endedAt && new Date(c.endedAt).getTime() > cutoff && !promptedRef.current.has(c._id))
+    if (!due.length) return
+    const latest = due.reduce((a, c) => (new Date(c.endedAt) > new Date(a.endedAt) ? c : a))
+    promptedRef.current.add(latest._id)
+    setEnded({ ...latest, late: true })
+  }, [classes, ended, covered])
 
   // After class: one click marks what it taught as completed, plus "More" for
   // anything else the session got through beyond its booking.
@@ -728,20 +904,26 @@ export default function MentorLiveClassesPage() {
     const p = classProgress(c)
     // Name exactly what gets marked — a bare "Completed" left it unclear
     // whether the class, the unit, or the chapter was done.
-    const name = p ? (p.isUnit ? c.unit?.name : c.chapter?.name) : ''
-    const kind = p?.isUnit ? 'unit' : 'chapter'
+    const isUnit = !!c.unit?.unitId
+    const name = isUnit ? c.unit?.name : c.chapter?.name
+    const kind = isUnit ? 'unit' : 'chapter'
+    // This class's own answer — with the syllabus flag as a footnote when an
+    // earlier session already completed the item.
+    const done = sessionDone(c, p)
+    const busy = coveredBusy === `${c.chapter?.chapterId || ''}:${c.unit?.unitId || ''}`
     return (
       <>
-        {p && (
-          <button onClick={() => toggleProgress(p.subjectId, p.chapterId, p.unitId, !p.completed)}
-            title={p.completed
-              ? `The ${kind} "${name}" is marked completed — click to unmark`
-              : `Mark the ${kind} "${name}" as completed`}
-            className={`${size} rounded-xl font-semibold whitespace-nowrap border max-w-[180px] sm:max-w-[220px] truncate ${
-              p.completed
+        {c.chapter?.chapterId && c.subject?.subjectId && (
+          <button onClick={() => setOutcome(c, !done)} disabled={busy}
+            title={done
+              ? `"${name}" was completed in this class — click to undo`
+              : `Mark the ${kind} "${name}" as completed in this class${
+                  p?.completed ? ' (already completed on the syllabus from an earlier session)' : ''}`}
+            className={`${size} rounded-xl font-semibold whitespace-nowrap border max-w-[180px] sm:max-w-[220px] truncate disabled:opacity-60 ${
+              done
                 ? 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100'
                 : 'border-teal-300 text-teal-700 hover:bg-teal-50'}`}>
-            {p.completed ? `✓ ${name} completed` : `Mark "${name}" done`}
+            {busy ? 'Saving…' : done ? `✓ ${name} completed` : `Mark "${name}" done`}
           </button>
         )}
         {c.subject?.subjectId && (
@@ -770,13 +952,34 @@ export default function MentorLiveClassesPage() {
     if (!confirm('End this class for everyone?')) return
     setBusyId(cls._id); setError('')
     try {
-      await apiFetch(`/api/live-classes/manage/${cls._id}/end`, { method: 'POST' })
+      const d = await apiFetch(`/api/live-classes/manage/${cls._id}/end`, { method: 'POST' })
       setCalTick((t) => t + 1)   // the calendar refetches so the slot flips to ended
       await load()
+      // Straight into "what did you finish?" — the step a mentor forgets. The
+      // prompt is keyed off the class we just ended, so it opens even if the
+      // refreshed list paged it away.
+      promptedRef.current.add(cls._id)
+      if (cls.subject?.subjectId) setEnded({ ...cls, ...(d?.liveClass || {}), status: 'ended', late: false })
     } catch (err) {
       setError(err.message || 'Could not end the class')
     } finally {
       setBusyId(null)
+    }
+  }
+
+  // Closing the prompt without a tick is an answer too — "not finished" — and
+  // is recorded, so the question isn't asked again on the next visit or from
+  // another device. A tick already recorded itself.
+  const closeEndedPrompt = async () => {
+    const c = ended && (classes?.find((x) => x._id === ended._id) || ended)
+    setEnded(null)
+    if (c?.outcome && !c.outcome.answeredAt && !c.outcome.completed) {
+      try {
+        await apiFetch(`/api/live-classes/manage/${c._id}/outcome`, {
+          method: 'POST', body: JSON.stringify({ completed: false }),
+        })
+        await load()
+      } catch { /* asked again next time — harmless */ }
     }
   }
 
@@ -1034,6 +1237,21 @@ export default function MentorLiveClassesPage() {
           <CoveredModal cls={cls} subject={subject} busyKey={coveredBusy} error={error}
             onToggle={(chapterId, unitId, isPrimary, next) => toggleCovered(cls, chapterId, unitId, isPrimary, next)}
             onClose={() => setCovered(null)} />
+        )
+      })()}
+
+      {/* Class ended — what did you finish? (right after End, or the one-time
+          catch-up for a class that ended on its own). Reads the class back
+          out of the list when it's there, so ticks show their fresh state. */}
+      {ended && (() => {
+        const cls = classes?.find((c) => c._id === ended._id) || ended
+        const subject = syllabus?.find((s) => String(s._id) === String(cls.subject?.subjectId))
+        const p = classProgress(cls)
+        return (
+          <ClassEndedModal cls={cls} subject={subject} progress={p} busyKey={coveredBusy} error={error} late={!!ended.late}
+            onSetDone={(next) => setOutcome(cls, next)}
+            onToggle={(chapterId, unitId, isPrimary, next) => toggleCovered(cls, chapterId, unitId, isPrimary, next)}
+            onClose={closeEndedPrompt} />
         )
       })()}
 
