@@ -275,21 +275,35 @@ function LiveRoomInner({
   // students submitClass, so the timer works even where classId isn't wired.
   const timerClassId = classId || activeClassId || submitClass?.id || null
   // Video quality is asymmetric on purpose: the host fills everyone's stage, so
-  // they capture and publish high-res; students only ever render as small tiles,
-  // so they're capped at 360p — that cap is what keeps the server inside its
-  // monthly bandwidth allowance. adaptiveStream + dynacast make each viewer pull
-  // only the simulcast layer their tile size actually needs.
+  // they capture and publish at the sharpest their camera can manage; students
+  // only ever render as small tiles, so they're capped at 360p — that cap is what
+  // keeps the server inside its monthly bandwidth allowance. adaptiveStream +
+  // dynacast make each viewer pull only the simulcast layer their tile size
+  // actually needs, so the host's top layer only costs bandwidth for the people
+  // actually watching the stage full-size.
   const roomOptions = useMemo(() => ({
     adaptiveStream: true,
     dynacast: true,
     videoCaptureDefaults: {
-      resolution: canHost ? VideoPresets.h1080.resolution : VideoPresets.h360.resolution,
+      // Asking for 1440p is a ceiling, not a demand — LiveKit passes this as an
+      // `ideal` constraint, so a 1080p/720p webcam just hands back what it has
+      // instead of failing. Bump to h2160 only for a camera that really is 4K.
+      resolution: canHost ? VideoPresets.h1440.resolution : VideoPresets.h360.resolution,
     },
     publishDefaults: {
       simulcast: true,
+      // 3Mbps is generous for the 720p laptop cameras mentors actually have and
+      // still has room for a better one; the old 2.5 was what made a 1080p host
+      // look soft. Every student watching the stage full-size pulls this, so it
+      // is also the number that decides the server's monthly egress.
       videoEncoding: canHost
-        ? { maxBitrate: 2_500_000, maxFramerate: 30 }
+        ? { maxBitrate: 3_000_000, maxFramerate: 30 }
         : VideoPresets.h360.encoding,
+      // The browser's default sheds resolution first when CPU or uplink tightens,
+      // which is exactly what makes the host go soft mid-class. Hold the pixels
+      // and drop framerate instead — for a talking head and for shared slides,
+      // legible beats smooth. Students keep the browser default.
+      degradationPreference: canHost ? 'maintain-resolution' : undefined,
     },
   }), [canHost])
   const [submitOpen, setSubmitOpen] = useState(false)
