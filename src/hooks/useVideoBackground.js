@@ -30,7 +30,9 @@ const ASSET_PATHS = {
   modelAssetPath: '/mediapipe/selfie_segmenter.tflite',
 }
 
-const UNSUPPORTED = 'Background effects need Chrome or Edge on a laptop or desktop.'
+// Chrome/Edge take a fast path; Safari 16.4+ and recent Firefox fall back to a
+// canvas pipeline that works but costs more CPU. Anything older has neither.
+const UNSUPPORTED = 'This browser is too old for background effects. Updating it should fix this.'
 const FAILED = 'The background effect could not start on this device.'
 
 const read = (key, fallback) => {
