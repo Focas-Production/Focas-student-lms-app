@@ -12,6 +12,7 @@
   "dependencies": {
     "@livekit/components-react": "^2.9.23",
     "@livekit/components-styles": "^1.2.0",
+    "@livekit/track-processors": "^0.8.0",
     "@tailwindcss/vite": "^4.2.4",
     "hls.js": "^1.6.16",
     "livekit-client": "^2.21.0",

@@ -9,6 +9,7 @@ import PipStage from './PipStage'
 import HostParticipantsPanel from './HostParticipantsPanel'
 import StudentMediaGuard from './StudentMediaGuard'
 import { usePictureInPicture, pickStageVideo } from '../hooks/usePictureInPicture'
+import BackgroundButton from './BackgroundButton'
 import { fmtCountdown } from '../utils/countdown'
 import { apiFetch } from '../api'
 
@@ -513,6 +514,7 @@ function LiveRoomInner({
   // Auto, the participants drawer, and the track switcher. Same bar, same look.
   const hostControls = canHost ? (
     <>
+      <BackgroundButton />
       {pipButton}
       {timerClassId && (
         <ParticipantsButton open={participantsOpen} hands={hands} onClick={() => setParticipantsOpen((v) => !v)} />
