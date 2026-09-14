@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
 import { useStudentLiveSession } from '../../components/StudentLiveSessionProvider'
@@ -65,7 +66,10 @@ export default function LiveClassesPage() {
   const [classes, setClasses] = useState(null)
   const [error, setError]     = useState('')
   const [submitFor, setSubmitFor] = useState(null)  // { id, title } while the panel is open
-  const [tab, setTab] = useState('list')            // 'list' | 'calendar'
+  // 'list' | 'calendar'. ?view=calendar (the link in the WhatsApp class alert)
+  // opens straight on the calendar.
+  const [searchParams] = useSearchParams()
+  const [tab, setTab] = useState(() => searchParams.get('view') === 'calendar' ? 'calendar' : 'list')
   // The room itself is owned by the layout-level provider, so it survives
   // navigating away while minimized (see StudentLiveSessionProvider).
   const { session, minimized, join: enterClass, joining, notice, clearNotice } = useStudentLiveSession()
