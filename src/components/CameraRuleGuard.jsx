@@ -182,7 +182,13 @@ export default function CameraRuleGuard({ classId, onRemovalNotice, onRaiseHand,
   const chip = !counting && (
     excused ? { text: '📷 The mentor has excused you from having your camera on', tone: 'calm' }
       : enabled && !camLocked && isCameraEnabled
-        ? { text: `📷 Camera required in this class${graceSeconds ? ` — turn it off and you have ${fmtMins(graceSeconds)}` : ''}`, tone: 'calm' }
+        ? {
+            text: `📷 Camera required in this class${graceSeconds ? ` — turn it off and you have ${fmtMins(graceSeconds)}` : ''}`,
+            // A phone gets the short form: the long one wrapped to two lines
+            // and sat over the mentor's face for the whole class.
+            short: '📷 Camera required',
+            tone: 'calm',
+          }
         : null
   )
 
@@ -224,7 +230,8 @@ export default function CameraRuleGuard({ classId, onRemovalNotice, onRaiseHand,
               background: 'rgba(0,0,0,0.72)', color: '#e2e8f0', fontSize: 11, fontWeight: 600,
               padding: '5px 12px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.18)',
             }}>
-              {chip.text}
+              <span className="focas-chip-long">{chip.text}</span>
+              <span className="focas-chip-short">{chip.short || chip.text}</span>
             </div>
           )}
           {notice && (
@@ -363,6 +370,11 @@ const CONTROL_BAR_FALLBACK = 96
 // scrolls rather than ever spilling over the controls.
 const CARD_CSS = `
 .focas-cam-card { max-height: 100%; overflow-y: auto; }
+.focas-chip-short { display: none; }
+@media (max-width: 640px), (max-height: 500px), (pointer: coarse) and (max-width: 1100px) {
+  .focas-chip-long { display: none; }
+  .focas-chip-short { display: inline; }
+}
 @media (max-height: 560px) {
   .focas-cam-card { padding: 12px 16px !important; max-width: 440px !important; }
   .focas-cam-card .focas-cam-icon { display: none; }

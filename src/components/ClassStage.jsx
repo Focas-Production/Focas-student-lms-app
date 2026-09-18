@@ -1,9 +1,10 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { RoomEvent, Track } from 'livekit-client'
+import { RoomEvent, Track, facingModeFromLocalTrack } from 'livekit-client'
 import {
   CarouselLayout, Chat, ConnectionStateToast, ControlBar, FocusLayout, GridLayout,
   LayoutContextProvider, MediaDeviceMenu, ParticipantTile, RoomAudioRenderer, TrackLoop,
-  isTrackReference, useCreateLayoutContext, usePinnedTracks, useTrackRefContext, useTracks,
+  isTrackReference, useCreateLayoutContext, useLocalParticipant, usePinnedTracks, useRoomContext,
+  useTrackRefContext, useTracks,
 } from '@livekit/components-react'
 
 // Identities with a hand up in this room, for the tiles. Provided by ClassStage
@@ -61,8 +62,9 @@ function HandTile() {
 // control moves into a sheet that opens above the bar, with its labels back.
 // It is the same element tree in both modes, only restyled: nothing remounts
 // when a phone rotates, so a running timer or an open upload is never lost.
-// The sheet also carries mic/camera pickers (front ↔ back camera), since the
-// row drops LiveKit's small device chevrons to fit.
+// The sheet also carries what the row's dropped device chevrons did, in the
+// form a phone needs: a one-tap front ↔ back camera flip (FlipCameraButton),
+// and a microphone picker for earphones / Bluetooth.
 // onBarHeight(px) — the bar's live height, so overlays can stop above it
 // however many lines it wraps to.
 // hands — [{ id, name }] students with a hand up in this room; each one's
@@ -186,13 +188,18 @@ export default function ClassStage({ compact = false, extraControls = null, prim
                         onClick={onSheetClick}
                       >
                         <div className="focas-more-devices focas-keep-sheet">
-                          <MediaDeviceMenu kind="audioinput" className="lk-button">
-                            <span aria-hidden="true">🎙</span>
-                            <span className="focas-ctl-label">Microphone</span>
-                          </MediaDeviceMenu>
-                          <MediaDeviceMenu kind="videoinput" className="lk-button">
-                            <span aria-hidden="true">📷</span>
-                            <span className="focas-ctl-label">Switch camera</span>
+                          <FlipCameraButton onDone={() => setMoreOpen(false)} />
+                          {/* A list, not a toggle — the mic on/off is the bar's
+                              🎙. The label says so, because "Microphone" read as
+                              the switch. (Its children ignore taps: see the
+                              .focas-more-devices rule in LiveRoom's CSS.) */}
+                          <MediaDeviceMenu
+                            kind="audioinput"
+                            className="lk-button"
+                            onActiveDeviceChange={() => setMoreOpen(false)}
+                          >
+                            <span aria-hidden="true">🎧</span>
+                            <span className="focas-ctl-label">Choose microphone</span>
                           </MediaDeviceMenu>
                         </div>
                         {extraControls}
@@ -209,6 +216,75 @@ export default function ClassStage({ compact = false, extraControls = null, prim
       <RoomAudioRenderer />
       <ConnectionStateToast />
     </div>
+  )
+}
+
+// One tap between the front and back camera — what a phone user means by
+// "switch camera". LiveKit's device list shows Android's raw names ("camera2
+// 1, facing front") and makes it a two-step pick, so this restarts the camera
+// track with the other facingMode instead. The track keeps its publication, so
+// nobody in the room sees the student drop out; the old camera is released
+// first, which phones need (they can't hold both open). With the camera off,
+// the tap turns it on facing the other way — the student asked to be seen.
+// The capture defaults (resolution) are carried over; a stale deviceId is not,
+// or it would pin the old camera and win over facingMode.
+function FlipCameraButton({ onDone }) {
+  const room = useRoomContext()
+  const { localParticipant, isCameraEnabled, cameraTrack } = useLocalParticipant()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  // What we last asked for — the track's own report wins when it has one.
+  const [asked, setAsked] = useState('user')
+  // The camera track outlives "camera off" (it's muted, not unpublished), so
+  // it's what we read the direction from and what we restart.
+  const track = cameraTrack?.videoTrack || null
+  const current = track ? facingModeFromLocalTrack(track, { defaultFacingMode: asked }).facingMode : asked
+  const next = current === 'environment' ? 'user' : 'environment'
+
+  const flip = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const options = { ...(room?.options?.videoCaptureDefaults || {}), facingMode: next }
+      delete options.deviceId
+      if (track) {
+        // Restart FIRST, then unmute: turning a muted camera back on reuses
+        // its old constraints and would silently ignore the flip.
+        await track.restartTrack(options)
+        if (!isCameraEnabled) await localParticipant.setCameraEnabled(true)
+      } else {
+        await localParticipant.setCameraEnabled(true, options)
+      }
+      setAsked(next)
+      onDone?.()
+    } catch (e) {
+      setError(/permission|notallowed/i.test(`${e?.name} ${e?.message}`)
+        ? 'The browser is blocking the camera — allow it for this site, then try again.'
+        : /overconstrained|notfound|notreadable/i.test(`${e?.name} ${e?.message}`)
+          ? `This device has no ${next === 'environment' ? 'back' : 'front'} camera it will let the browser use.`
+          : e?.message || 'Could not switch the camera')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        className="lk-button focas-flip-camera"
+        onClick={flip}
+        disabled={busy}
+        title={`Switch to the ${next === 'environment' ? 'back' : 'front'} camera`}
+      >
+        <span aria-hidden="true">🔄</span>
+        <span className="focas-ctl-label">
+          {busy ? 'Switching…' : !isCameraEnabled ? `Turn on ${next === 'environment' ? 'back' : 'front'} camera`
+            : `Switch to ${next === 'environment' ? 'back' : 'front'} camera`}
+        </span>
+      </button>
+      {error && <div role="alert" className="focas-sheet-error">{error}</div>}
+    </>
   )
 }
 

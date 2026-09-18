@@ -77,7 +77,7 @@ const LIVE_LAYOUT_CSS = `
 /* Wide screens: the ⋯ button and the phone-only device pickers don't exist,
    and the sheet's contents sit inline in the row. The running timer stays at
    the end of the row, where it always was. */
-.focas-more-btn, .focas-more-devices { display: none; }
+.focas-more-btn, .focas-more-devices, .focas-sheet-note { display: none; }
 .focas-more-sheet { display: contents; }
 .focas-timer-slot { display: contents; }
 .focas-extra-controls > .focas-timer-slot > * { order: 60; }
@@ -128,7 +128,34 @@ const LIVE_LAYOUT_CSS = `
     animation: focas-sheet-in 0.16s ease-out;
   }
   .focas-more-devices { display: contents; }
-  .focas-more-sheet .lk-button { width: 100%; justify-content: flex-start; gap: 0.6rem; }
+  /* LiveKit's device menu only counts a tap on the button ITSELF as "toggle";
+     a tap landing on the icon or label inside it reads as "outside", so the
+     list opened and shut in the same tap. Let taps fall through to the button. */
+  .focas-more-devices .lk-button > * { pointer-events: none; }
+  .focas-sheet-error {
+    grid-column: 1 / -1; font-size: 12px; font-weight: 600; color: #fff;
+    background: rgba(127,29,29,0.92); border: 1px solid rgba(248,113,113,0.5);
+    border-radius: 8px; padding: 6px 10px;
+  }
+  /* Why a greyed button is greyed, right on it: phone browsers can't capture
+     the screen at all. */
+  .focas-more-sheet .focas-sheet-note { display: inline; font-size: 0.8em; opacity: 0.8; }
+  /* Corner notices become a snackbar just above the bar: at phone width the
+     top-right corner is the same strip as the title and the camera banners,
+     and they drew over each other. */
+  .focas-toast-stack {
+    top: auto !important; bottom: calc(var(--focas-bar-h, 64px) + 8px) !important;
+    left: 8px !important; right: 8px !important; max-width: none !important;
+    align-items: center !important; z-index: 36 !important;
+  }
+  .focas-more-sheet .lk-button {
+    width: 100%; min-width: 0; min-height: 44px; justify-content: flex-start; gap: 0.6rem;
+    /* Labels wrap rather than run past the cell's edge on a narrow phone. */
+    white-space: normal; text-align: left; line-height: 1.2; overflow-wrap: anywhere;
+  }
+  .focas-more-sheet .lk-button > [aria-hidden] { flex-shrink: 0; }
+  /* The camera flip is what a phone user opens this sheet for — its own row. */
+  .focas-more-sheet .focas-flip-camera { grid-column: 1 / -1; }
   .focas-more-sheet .focas-ctl-label,
   .focas-more-sheet .focas-ctl-label-wide { display: inline !important; }
   .focas-more-sheet .focas-bg-wrap { display: flex; }
@@ -717,6 +744,7 @@ function LiveRoomInner({
         >
           <span aria-hidden="true">🖥</span>
           <span className="focas-ctl-label">Share screen</span>
+          <span className="focas-sheet-note">· laptop only</span>
         </button>
       )}
       {studentControls}
@@ -835,7 +863,7 @@ function LiveRoomInner({
             (While minimized the page IS visible and shows them itself.)
             Top-right is free now that every control sits in the bottom bar. */}
         {!minimized && (notice || toast || pip.error || autoHint || shareHint) && (
-          <div style={{
+          <div className="focas-toast-stack" style={{
             position: 'absolute', top: 8, right: 8, zIndex: 21,
             display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4,
             maxWidth: '52vw',
