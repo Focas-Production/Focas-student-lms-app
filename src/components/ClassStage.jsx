@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef,
 import { RoomEvent, Track } from 'livekit-client'
 import {
   CarouselLayout, Chat, ConnectionStateToast, ControlBar, FocusLayout, GridLayout,
-  LayoutContextProvider, ParticipantTile, RoomAudioRenderer, TrackLoop,
+  LayoutContextProvider, MediaDeviceMenu, ParticipantTile, RoomAudioRenderer, TrackLoop,
   isTrackReference, useCreateLayoutContext, usePinnedTracks, useTrackRefContext, useTracks,
 } from '@livekit/components-react'
 
@@ -52,10 +52,62 @@ function HandTile() {
 // out in the same row as LiveKit's (mic, camera, share, chat, leave). Anything
 // a participant acts on during class belongs down here, not floating over the
 // stage where it covers the tiles' own controls.
+// primaryControls — the few of those that must stay one tap away on a phone
+// (a student's Raise hand; a host's Participants and Timer).
+//
+// COMPACT MODE (phones in either orientation, and touch tablets — the query
+// is in LiveRoom's LIVE_LAYOUT_CSS): the bar is ONE row — mic,
+// camera, chat, the primary controls, ⋯ More, Leave last — and every other
+// control moves into a sheet that opens above the bar, with its labels back.
+// It is the same element tree in both modes, only restyled: nothing remounts
+// when a phone rotates, so a running timer or an open upload is never lost.
+// The sheet also carries mic/camera pickers (front ↔ back camera), since the
+// row drops LiveKit's small device chevrons to fit.
+// onBarHeight(px) — the bar's live height, so overlays can stop above it
+// however many lines it wraps to.
 // hands — [{ id, name }] students with a hand up in this room; each one's
 // camera tile wears a 🖐 badge until they lower it or leave.
-export default function ClassStage({ compact = false, extraControls = null, hands = [] }) {
+export default function ClassStage({ compact = false, extraControls = null, primaryControls = null, hands = [], onBarHeight }) {
   const [widgetState, setWidgetState] = useState({ showChat: false, unreadMessages: 0, showSettings: false })
+  const [moreOpen, setMoreOpen] = useState(false)
+  const rowRef = useRef(null)
+  const sheetRef = useRef(null)
+  const moreBtnRef = useRef(null)
+
+  // Report the bar's real height — it changes with wrapping, rotation and the
+  // compact switch, and the overlays above it must never cover a button.
+  useLayoutEffect(() => {
+    const el = rowRef.current
+    if (!el || !onBarHeight) return undefined
+    const ro = new ResizeObserver(() => onBarHeight(Math.round(el.getBoundingClientRect().height)))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [onBarHeight])
+
+  // The sheet closes on a tap outside it, on Escape, and after any action in
+  // it — except inside `.focas-keep-sheet` (device pickers, the background
+  // chooser), whose own popovers live in the sheet and would vanish with it.
+  useEffect(() => {
+    if (!moreOpen) return undefined
+    const onDown = (e) => {
+      if (sheetRef.current?.contains(e.target) || moreBtnRef.current?.contains(e.target)) return
+      // LiveKit's device menu is positioned outside the sheet's box.
+      if (e.target.closest?.('.lk-device-menu')) return
+      setMoreOpen(false)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') setMoreOpen(false) }
+    document.addEventListener('pointerdown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [moreOpen])
+  const onSheetClick = (e) => {
+    const btn = e.target.closest?.('button')
+    if (!btn || e.target.closest('.focas-keep-sheet')) return
+    setMoreOpen(false)
+  }
   const handSet = useMemo(() => new Set((hands || []).map((h) => String(h.id))), [hands])
   const lastAutoFocused = useRef(null)
   const tracks = useTracks(
@@ -104,9 +156,51 @@ export default function ClassStage({ compact = false, extraControls = null, hand
               </div>
             )}
             {/* One row: LiveKit's bar plus the caller's buttons (styles in LiveRoom's LIVE_LAYOUT_CSS) */}
-            <div className="focas-control-row">
+            <div className="focas-control-row" ref={rowRef}>
               <ControlBar controls={{ chat: true, settings: false }} />
-              {extraControls && <div className="focas-extra-controls">{extraControls}</div>}
+              {(primaryControls || extraControls) && (
+                <div className="focas-extra-controls">
+                  {primaryControls}
+                  {extraControls && (
+                    <>
+                      {/* Compact mode only (CSS hides it otherwise). */}
+                      <button
+                        ref={moreBtnRef}
+                        type="button"
+                        className="lk-button focas-more-btn"
+                        onClick={() => setMoreOpen((v) => !v)}
+                        aria-expanded={moreOpen}
+                        aria-controls="focas-more-sheet"
+                        aria-label={moreOpen ? 'Close more controls' : 'More controls'}
+                        title="More controls"
+                      >
+                        <span aria-hidden="true">{moreOpen ? '✕' : '⋯'}</span>
+                      </button>
+                      {/* Inline in the row on wide screens (display: contents);
+                          a sheet above the bar in compact mode. */}
+                      <div
+                        id="focas-more-sheet"
+                        ref={sheetRef}
+                        className="focas-more-sheet"
+                        data-open={moreOpen ? 'true' : undefined}
+                        onClick={onSheetClick}
+                      >
+                        <div className="focas-more-devices focas-keep-sheet">
+                          <MediaDeviceMenu kind="audioinput" className="lk-button">
+                            <span aria-hidden="true">🎙</span>
+                            <span className="focas-ctl-label">Microphone</span>
+                          </MediaDeviceMenu>
+                          <MediaDeviceMenu kind="videoinput" className="lk-button">
+                            <span aria-hidden="true">📷</span>
+                            <span className="focas-ctl-label">Switch camera</span>
+                          </MediaDeviceMenu>
+                        </div>
+                        {extraControls}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
           <Chat style={{ display: widgetState.showChat ? 'grid' : 'none' }} />

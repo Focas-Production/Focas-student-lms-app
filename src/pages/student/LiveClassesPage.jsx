@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
@@ -28,10 +28,13 @@ function fmtWhen(d) {
 //               the calendar modal already shows a countdown)
 //   inClassId   the class the student is connected to right now (minimized) —
 //               its button reads "Back to class" and just expands the window
-function StudentClassActions({ cls, joining, inClassId, onJoin, onSubmit, compact = false, placeholder = false }) {
+function StudentClassActions({ cls, joining, inClassId, onJoin, onSubmit, onAskBack, asking, compact = false, placeholder = false }) {
   const live = cls.status === 'live'
   const scheduled = cls.status === 'scheduled'
   const showPlaceholder = placeholder && scheduled && !live
+  // Removed from a live class: the door is shut until the mentor opens it, so
+  // the card offers the ask instead of a Join button that would only 403.
+  const lockedOut = live && cls.removed
   if (!live && !cls.submissionOpen && !showPlaceholder) return null
 
   const inThisClass = !!inClassId && inClassId === cls._id
@@ -47,7 +50,22 @@ function StudentClassActions({ cls, joining, inClassId, onJoin, onSubmit, compac
           📎 Submit{compact ? '' : ' work'}
         </button>
       )}
-      {live ? (
+      {lockedOut ? (
+        <button
+          onClick={() => onAskBack(cls)}
+          disabled={asking === cls._id}
+          title={cls.rejoinStatus === 'pending'
+            ? 'Your mentor has been told — they will let you in from inside the class'
+            : 'Send your mentor a request to let you back into this class'}
+          className={`${grow} ${size} rounded-xl font-semibold whitespace-nowrap ${
+            cls.rejoinStatus === 'pending'
+              ? 'bg-amber-100 text-amber-700 border border-amber-300'
+              : 'bg-amber-500 text-white hover:bg-amber-600'}`}>
+          {asking === cls._id ? 'Sending…'
+            : cls.rejoinStatus === 'pending' ? '⏳ Waiting for the mentor'
+              : '🙋 Ask to be let back in'}
+        </button>
+      ) : live ? (
         <button onClick={() => onJoin(cls)} disabled={joining === cls._id}
           className={`${grow} ${size} rounded-xl font-semibold whitespace-nowrap disabled:bg-gray-200 disabled:text-gray-400 ${
             inThisClass ? 'bg-teal-600 text-white hover:bg-teal-700' : 'bg-red-600 text-white hover:bg-red-700'}`}>
@@ -74,14 +92,42 @@ export default function LiveClassesPage() {
   // navigating away while minimized (see StudentLiveSessionProvider).
   const { session, minimized, join: enterClass, joining, notice, clearNotice } = useStudentLiveSession()
 
+  const [asking, setAsking] = useState(null)      // class id whose request is in flight
+  const [letIn, setLetIn] = useState('')          // "the mentor let you back in" banner
+  // Which classes we last saw the student locked out of, so the moment the
+  // mentor opens the door we can say so — they are outside the room, so this
+  // poll IS their notification channel.
+  const lockedRef = useRef(new Set())
+
   const load = useCallback(async () => {
     try {
       const d = await apiFetch('/api/live-classes')
-      setClasses(d.classes || [])
+      const list = d.classes || []
+      const wasLocked = lockedRef.current
+      const freed = list.find((c) => c.status === 'live' && !c.removed && wasLocked.has(c._id))
+      lockedRef.current = new Set(list.filter((c) => c.removed).map((c) => c._id))
+      if (freed) {
+        playLetInChime()
+        setLetIn(`Your mentor let you back into “${freed.title}”. You can join again — keep your camera on.`)
+      }
+      setClasses(list)
     } catch {
       setClasses([])
     }
   }, [])
+
+  const askBack = async (cls) => {
+    setError('')
+    setAsking(cls._id)
+    try {
+      await apiFetch(`/api/live-classes/${cls._id}/rejoin-request`, { method: 'POST', body: '{}' })
+      setClasses((cs) => cs.map((c) => c._id === cls._id ? { ...c, rejoinStatus: 'pending' } : c))
+    } catch (e) {
+      setError(e.message || 'Could not send your request')
+    } finally {
+      setAsking(null)
+    }
+  }
 
   // On mount, and whenever this page becomes visible again — the class ended
   // (or the student left), or they minimized it — since a class may have gone
@@ -91,11 +137,14 @@ export default function LiveClassesPage() {
 
   // Refresh every 20s so a class flips to "Join now" shortly after the host
   // starts it. Paused while the room covers the page — nobody can see the list.
+  const waitingForMentor = (classes || []).some((c) => c.removed && c.rejoinStatus === 'pending')
   useEffect(() => {
-    if (!pageVisible) return
-    const t = setInterval(load, 20_000)
+    if (!pageVisible) return undefined
+    // Locked out and waiting on an answer: check more often. Nothing pushes to
+    // a student who isn't in the room.
+    const t = setInterval(load, waitingForMentor ? 8_000 : 20_000)
     return () => clearInterval(t)
-  }, [load, pageVisible])
+  }, [load, pageVisible, waitingForMentor])
 
   const join = async (cls) => {
     setError('')
@@ -124,6 +173,13 @@ export default function LiveClassesPage() {
       </div>
 
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
+      {/* The mentor answered a "let me back in" request. */}
+      {letIn && (
+        <p className="text-sm text-teal-700 bg-teal-50 border border-teal-200 rounded-xl px-3 py-2 mb-3 flex items-center gap-2">
+          <span className="flex-1">✅ {letIn}</span>
+          <button onClick={() => setLetIn('')} className="text-teal-400 hover:text-teal-600 text-lg leading-none" title="Dismiss">×</button>
+        </p>
+      )}
       {/* Why the last class ended, when it wasn't the student's choice. */}
       {notice && (
         <p className="text-sm text-red-500 mb-3 flex items-center gap-2">
@@ -137,6 +193,7 @@ export default function LiveClassesPage() {
           endpoint="/api/live-classes/schedule"
           renderActions={(c, { compact, close }) => (
             <StudentClassActions cls={c} joining={joining} inClassId={session?.classId} compact={compact}
+              asking={asking} onAskBack={askBack}
               onJoin={(cls) => { close(); join(cls) }}
               onSubmit={(cls) => { close(); setSubmitFor({ id: cls._id, title: cls.title }) }} />
           )}
@@ -184,6 +241,7 @@ export default function LiveClassesPage() {
 
                 <div className="flex gap-2 flex-shrink-0 w-full sm:w-auto">
                   <StudentClassActions cls={c} joining={joining} inClassId={session?.classId} placeholder
+                    asking={asking} onAskBack={askBack}
                     onJoin={join}
                     onSubmit={(cls) => setSubmitFor({ id: cls._id, title: cls.title })} />
                 </div>
@@ -205,4 +263,32 @@ export default function LiveClassesPage() {
       )}
     </div>
   )
+}
+
+
+// A short rising pair — "the door opened". Synthesized like the room's own
+// chimes so there is no audio asset to load, and only ever fired straight after
+// a poll the student's own page ran, so autoplay policy is satisfied.
+function playLetInChime() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext
+    if (!Ctx) return
+    const ctx = new Ctx()
+    const t0 = ctx.currentTime
+    ;[[659.25, 0], [987.77, 0.15]].forEach(([freq, at]) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = freq
+      gain.gain.setValueAtTime(0.0001, t0 + at)
+      gain.gain.exponentialRampToValueAtTime(0.25, t0 + at + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.4)
+      osc.connect(gain).connect(ctx.destination)
+      osc.start(t0 + at)
+      osc.stop(t0 + at + 0.42)
+    })
+    setTimeout(() => { ctx.close().catch(() => {}) }, 1200)
+  } catch {
+    // Sound is a nicety — the banner still shows.
+  }
 }

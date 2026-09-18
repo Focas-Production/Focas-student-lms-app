@@ -56,7 +56,10 @@ export default function BackgroundButton() {
 
   const on = choice !== OFF
   return (
-    <div ref={wrapRef} style={{ position: 'relative', display: 'inline-flex' }}>
+    // focas-bg-wrap: positioning lives in LiveRoom's CSS so the phone sheet can
+    // stretch it; focas-keep-sheet: opening the chooser must not close the ⋯
+    // sheet it sits in (see ClassStage).
+    <div ref={wrapRef} className="focas-bg-wrap focas-keep-sheet">
       <button
         type="button"
         className="lk-button"
@@ -85,6 +88,8 @@ export default function BackgroundButton() {
         <div
           role="dialog"
           aria-label="Backgrounds"
+          // On a phone this pins across the screen above the bar (LiveRoom CSS).
+          className="focas-bar-popover"
           style={{
             position: 'absolute', bottom: '100%', left: 0, marginBottom: 8, zIndex: 40,
             // Wide enough for all five background tiles on one row; the guard

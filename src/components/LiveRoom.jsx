@@ -8,6 +8,8 @@ import ClassStage from './ClassStage'
 import PipStage from './PipStage'
 import HostParticipantsPanel from './HostParticipantsPanel'
 import StudentMediaGuard from './StudentMediaGuard'
+import CameraRuleGuard from './CameraRuleGuard'
+import HostCameraAlerts from './HostCameraAlerts'
 import { usePictureInPicture, pickStageVideo } from '../hooks/usePictureInPicture'
 import BackgroundButton from './BackgroundButton'
 import { fmtCountdown } from '../utils/countdown'
@@ -58,9 +60,11 @@ const LIVE_LAYOUT_CSS = `
    flex instead: the row takes the height it needs, the stage gives it up. */
 .focas-live .lk-grid-layout-wrapper,
 .focas-live .lk-focus-layout-wrapper { height: auto; flex: 1 1 0; min-height: 0; }
+/* Our buttons WRAP rather than run off the screen: a tablet-width host bar
+   used to push Background, Pop out and the tracks past both edges. */
 .focas-extra-controls {
-  display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.75rem 0.75rem 0.75rem 0; margin-left: -0.25rem;
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 0.5rem;
+  padding: 0.75rem 0.75rem 0.75rem 0;
 }
 @media (max-width: 760px) {
   .focas-extra-controls .focas-ctl-label { display: none; }
@@ -70,6 +74,104 @@ const LIVE_LAYOUT_CSS = `
 @media (max-width: 1400px) {
   .focas-extra-controls .focas-ctl-label-wide { display: none; }
 }
+/* Wide screens: the ⋯ button and the phone-only device pickers don't exist,
+   and the sheet's contents sit inline in the row. The running timer stays at
+   the end of the row, where it always was. */
+.focas-more-btn, .focas-more-devices { display: none; }
+.focas-more-sheet { display: contents; }
+.focas-timer-slot { display: contents; }
+.focas-extra-controls > .focas-timer-slot > * { order: 60; }
+.focas-bg-wrap { position: relative; display: inline-flex; }
+.focas-pnum { display: none; }
+
+/* ── Compact: phones in either orientation (a landscape phone is wide but
+   only ~390px tall — a two-line bar there left the class a letterbox), and
+   touch tablets, where a host's bar wrapped to three lines. A laptop browser
+   with a mouse keeps the full bar however narrow its window. ──
+   One row: mic, camera, chat, the primary controls, ⋯, and Leave last. The
+   row's own containers dissolve (display: contents) so every button is a
+   sibling and \`order\` can put Leave at the end. */
+@media (max-width: 640px), (max-height: 500px), (pointer: coarse) and (max-width: 1100px) {
+  .focas-control-row {
+    position: relative; gap: 4px; padding: 6px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+  }
+  .focas-control-row .lk-control-bar,
+  .focas-control-row .focas-extra-controls { display: contents; }
+  /* LiveKit's device chevrons don't fit a phone row — the sheet has the
+     pickers (front ↔ back camera) instead. */
+  .focas-control-row .lk-button-group-menu { display: none; }
+  .focas-control-row .lk-button-group > .lk-button { border-radius: var(--lk-border-radius); }
+  /* LiveKit gives the mic/camera groups height: 100% — as flex items of a row
+     that may wrap, that stretched them to the whole row and pushed a wrapped
+     Leave below the screen. */
+  .focas-control-row .lk-button-group { height: auto; }
+  /* 44px minimum touch targets (Apple HIG / WCAG 2.5.5). Leave is not an
+     .lk-button in LiveKit's markup, so it's named separately. */
+  .focas-control-row .lk-button,
+  .focas-control-row .lk-disconnect-button {
+    min-width: 44px; min-height: 44px; padding: 0 0.65rem; justify-content: center;
+  }
+  .focas-control-row .focas-ctl-label,
+  .focas-control-row .focas-ctl-label-wide { display: none; }
+  .focas-more-btn { display: inline-flex; order: 90; font-size: 1.1rem; }
+  .focas-control-row .lk-disconnect-button { order: 100; }
+  .focas-control-row .lk-button-group { order: 0; }
+
+  .focas-more-sheet { display: none; }
+  .focas-more-sheet[data-open] {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px;
+    position: absolute; left: 8px; right: 8px; bottom: calc(100% + 8px); z-index: 35;
+    padding: 12px; border-radius: 14px;
+    background: rgba(24,24,30,0.98); border: 1px solid rgba(255,255,255,0.14);
+    box-shadow: 0 -12px 32px rgba(0,0,0,0.5);
+    animation: focas-sheet-in 0.16s ease-out;
+  }
+  .focas-more-devices { display: contents; }
+  .focas-more-sheet .lk-button { width: 100%; justify-content: flex-start; gap: 0.6rem; }
+  .focas-more-sheet .focas-ctl-label,
+  .focas-more-sheet .focas-ctl-label-wide { display: inline !important; }
+  .focas-more-sheet .focas-bg-wrap { display: flex; }
+  /* Multi-button widgets (Pop out + Auto, the track switcher) take a line. */
+  .focas-more-sheet .focas-sheet-wide { grid-column: 1 / -1; display: flex !important; }
+  .focas-more-sheet .focas-sheet-wide > .lk-button { flex: 1; }
+  .focas-more-sheet .focas-tracks { justify-content: center; gap: 6px !important; }
+  .focas-more-sheet .focas-tracks > span { flex: 1; }
+  .focas-more-sheet .focas-tracks .lk-button { justify-content: center; }
+
+  /* A popover anchored to one button can't fit beside it on a phone — pin it
+     across the screen just above the bar instead. */
+  .focas-bar-popover {
+    position: fixed !important; left: 8px !important; right: 8px !important;
+    top: auto !important; bottom: calc(var(--focas-bar-h, 64px) + 8px) !important;
+    width: auto !important; max-width: none !important; margin: 0 !important;
+    z-index: 40 !important;
+  }
+  .focas-bar-popover button { min-height: 40px; }
+  .focas-bar-popover input { min-height: 40px; font-size: 16px !important; }
+  /* A running timer floats just above the bar instead of taking a slot. */
+  .focas-timer-running {
+    position: absolute !important; left: 50%; bottom: calc(100% + 8px);
+    transform: translateX(-50%); z-index: 20;
+  }
+  .focas-timer-running > div { padding: 0.35rem 0.75rem !important; font-size: 13px !important; }
+
+  /* The 👥 button's badges turn into corner counters — names don't fit, and
+     a badge that widens the button would push Leave onto a second line. */
+  .focas-pbtn { position: relative; }
+  .focas-control-row .focas-pbadge {
+    position: absolute; top: -6px; margin: 0 !important; line-height: 14px;
+    font-size: 9px !important; padding: 1px 5px !important; max-width: none !important;
+    box-shadow: 0 0 0 2px var(--lk-bg, #111);
+  }
+  .focas-control-row .focas-pbadge-rejoin { right: -6px; }
+  .focas-control-row .focas-pbadge-hand { left: -6px; }
+  .focas-control-row .focas-pnames { display: none; }
+  .focas-control-row .focas-pnum { display: inline !important; }
+  /* Top-of-stage banners sit under the title chip, not on top of it. */
+  .focas-top-banner { top: 40px !important; }
+}
+@keyframes focas-sheet-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 `
 
 // Host preference: pop out automatically when switching tabs (Meet-style).
@@ -252,8 +354,15 @@ const NOTIFY_TOPIC = 'focas-notify'
 // video / ask to unmute / lock / remove — see HostParticipantsPanel), and
 // students get the matching prompts and explanations (StudentMediaGuard).
 //
+// Students also get the "camera must be on" rule (CameraRuleGuard): while the
+// host has it switched on for this class, a student whose camera is off sees a
+// countdown and is removed by the SERVER when it runs out. See
+// server/services/cameraRuleService.js.
+//
 // onLeave(info?) — `info.removed` is true when the host removed this
 // participant, so the page can say so instead of silently dropping them.
+// `info.reason` carries the sentence to show when we know more than that (the
+// camera rule being the case that has one).
 //
 // hostIdentity (students) — the host's LiveKit identity (their user id), so the
 // room can show "Waiting for the mentor" while they're out: a class stays live
@@ -337,6 +446,12 @@ function LiveRoomInner({
   const autoHintTimer = useRef(null)
   useEffect(() => () => clearTimeout(autoHintTimer.current), [])
   const pip = usePictureInPicture({ getStageVideo, autoEnabled: !!canHost && autoPip, rearmKey: playerEpoch })
+  // The control bar's real height as --focas-bar-h on the shell: it wraps,
+  // rotates and switches to compact, and every overlay that must stop above
+  // it (the camera countdown card, the lock banner, phone popovers) reads it.
+  const onBarHeight = useCallback((h) => {
+    shellRef.current?.style.setProperty('--focas-bar-h', `${h}px`)
+  }, [])
   // Why Auto can't fire right now, if it can't: 'https' | 'media' | null.
   const autoBlockedBy = !autoPip ? null : pip.autoNeedsHttps ? 'https' : !capturing ? 'media' : null
   // Handed up by LocalMediaProbe so the hint can switch the mic on directly.
@@ -375,11 +490,18 @@ function LiveRoomInner({
   const hands = activeTrack?.hands || []
   // The room timer's state, mirrored into the pop-out (ClassTimer owns it).
   const [timerState, setTimerState] = useState(null)
+  // Why this participant is about to be disconnected, when the server told us
+  // just before doing it (the camera rule). LiveKit's own disconnect reason is
+  // only PARTICIPANT_REMOVED, which would read as "the mentor threw me out".
+  const removalReason = useRef('')
+  // Students waiting for this host to let them back in — the 👥 badge, kept by
+  // HostCameraAlerts so it survives the drawer being closed.
+  const [pendingRejoins, setPendingRejoins] = useState(0)
 
   // Pop out + Auto as one joined pair in the bottom bar, in LiveKit's button
   // style; the active/blocked states override its background.
   const pipButton = canHost && (
-    <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+    <span className="focas-sheet-wide" style={{ display: 'inline-flex', flexShrink: 0 }}>
       <button
         type="button"
         className="lk-button"
@@ -478,7 +600,23 @@ function LiveRoomInner({
   // tile keeps its expand/focus toggle, and the shared screen's was unreachable
   // underneath them. LiveKit's own button class keeps them looking native; the
   // active states (work submitted, hand up) override its background.
-  const studentControls = (onRaiseHand || submitClass) ? (
+  // Raise hand is a student's one must-reach button — it stays in the row on a
+  // phone (primaryControls); Submit work can live in the ⋯ sheet.
+  const raiseHandButton = onRaiseHand ? (
+    <button
+      type="button"
+      className="lk-button"
+      onClick={onRaiseHand}
+      aria-pressed={!!handRaised}
+      title={handRaised ? 'Lower your hand' : 'Raise your hand — the mentor gets notified'}
+      aria-label={handRaised ? 'Lower your hand' : 'Raise your hand'}
+      style={handRaised ? { backgroundColor: '#ca8a04', color: '#fff' } : undefined}
+    >
+      <span aria-hidden="true">🖐</span>
+      <span className="focas-ctl-label">{handRaised ? 'Hand raised' : 'Raise hand'}</span>
+    </button>
+  ) : null
+  const studentControls = submitClass ? (
     <>
       {submitClass && (
         <button
@@ -493,32 +631,25 @@ function LiveRoomInner({
           <span className="focas-ctl-label">{submittedCount ? `Submitted ${submittedCount}` : 'Submit work'}</span>
         </button>
       )}
-      {onRaiseHand && (
-        <button
-          type="button"
-          className="lk-button"
-          onClick={onRaiseHand}
-          aria-pressed={!!handRaised}
-          title={handRaised ? 'Lower your hand' : 'Raise your hand — the mentor gets notified'}
-          aria-label={handRaised ? 'Lower your hand' : 'Raise your hand'}
-          style={handRaised ? { backgroundColor: '#ca8a04', color: '#fff' } : undefined}
-        >
-          <span aria-hidden="true">🖐</span>
-          <span className="focas-ctl-label">{handRaised ? 'Hand raised' : 'Raise hand'}</span>
-        </button>
-      )}
     </>
   ) : null
 
   // Host controls — everything that used to float over the stage: Pop out /
   // Auto, the participants drawer, and the track switcher. Same bar, same look.
+  // Participants is the host's must-reach button (hands up, students asking to
+  // come back) — primaryControls, so it stays in the row on a phone.
+  const participantsButton = canHost && timerClassId ? (
+    <ParticipantsButton
+      open={participantsOpen}
+      hands={hands}
+      pendingRejoins={pendingRejoins}
+      onClick={() => setParticipantsOpen((v) => !v)}
+    />
+  ) : null
   const hostControls = canHost ? (
     <>
       <BackgroundButton />
       {pipButton}
-      {timerClassId && (
-        <ParticipantsButton open={participantsOpen} hands={hands} onClick={() => setParticipantsOpen((v) => !v)} />
-      )}
       {onOpenSubmissions && (
         <button
           type="button"
@@ -555,10 +686,24 @@ function LiveRoomInner({
     </>
   ) : null
 
-  // Everything in the bar after LiveKit's own buttons. The timer is mounted
-  // here even while minimized (the row is only CSS-hidden) so the countdown
-  // keeps ticking and the chime still fires.
-  const barControls = (!SCREEN_SHARE_SUPPORTED || studentControls || hostControls || onToggleMinimize || timerClassId) ? (
+  // The bar after LiveKit's own buttons, in two groups (see ClassStage):
+  //   primaryControls — stay in the row even on a phone
+  //   barControls     — inline on wide screens, in the ⋯ sheet on a phone
+  // The timer is primary and mounted even while minimized (the row is only
+  // CSS-hidden) so the countdown keeps ticking and the chime still fires. On a
+  // phone a RUNNING timer floats just above the bar rather than taking a slot.
+  const primaryControls = (raiseHandButton || participantsButton || timerClassId) ? (
+    <>
+      {raiseHandButton}
+      {participantsButton}
+      {timerClassId && (
+        <span className="focas-timer-slot">
+          <ClassTimer classId={timerClassId} canHost={!!canHost} minimized={!!minimized} onStateChange={setTimerState} />
+        </span>
+      )}
+    </>
+  ) : null
+  const barControls = (!SCREEN_SHARE_SUPPORTED || studentControls || hostControls || onToggleMinimize) ? (
     <>
       {!SCREEN_SHARE_SUPPORTED && (
         <button
@@ -588,9 +733,6 @@ function LiveRoomInner({
         </button>
       )}
       {hostControls}
-      {timerClassId && (
-        <ClassTimer classId={timerClassId} canHost={!!canHost} minimized={!!minimized} onStateChange={setTimerState} />
-      )}
     </>
   ) : null
 
@@ -610,7 +752,17 @@ function LiveRoomInner({
         video={false}
         audio={false}
         // A host removing this participant is the one disconnect worth naming.
-        onDisconnected={(reason) => onLeave?.(reason === DisconnectReason.PARTICIPANT_REMOVED ? { removed: true } : undefined)}
+        onDisconnected={(reason) => onLeave?.(
+          reason === DisconnectReason.PARTICIPANT_REMOVED
+            ? {
+                removed: true,
+                reason: removalReason.current?.message || '',
+                // They've used up their chances: the page offers "ask the
+                // mentor to let me back in" rather than a dead Join button.
+                blocked: !!removalReason.current?.blocked,
+              }
+            : undefined,
+        )}
         data-lk-theme="default"
         style={{ height: minimized ? '100%' : '100dvh' }}
       >
@@ -781,6 +933,24 @@ function LiveRoomInner({
         {/* Zoom-style media controls: the host's drawer, or the student's
             prompts/explanations. Both need room context, hence in here. */}
         {!canHost && <StudentMediaGuard classId={timerClassId} />}
+        {!canHost && timerClassId && (
+          <CameraRuleGuard
+            classId={timerClassId}
+            onRaiseHand={onRaiseHand}
+            handRaised={handRaised}
+            onRemovalNotice={(info) => { removalReason.current = info }}
+          />
+        )}
+        {/* Hosts: the chimes for things they didn't do — a student removed by
+            the camera rule, or one asking to be let back in. Mounted for the
+            whole session, not just while the drawer is open. */}
+        {canHost && timerClassId && (
+          <HostCameraAlerts
+            classId={timerClassId}
+            onPendingRejoins={setPendingRejoins}
+            onOpenPanel={() => setParticipantsOpen(true)}
+          />
+        )}
         {canHost && timerClassId && participantsOpen && !minimized && (
           <HostParticipantsPanel classId={timerClassId} hands={hands} onClose={() => setParticipantsOpen(false)} />
         )}
@@ -814,7 +984,13 @@ function LiveRoomInner({
 
         {/* The stage plus the bottom bar; every in-class control we add lives
             in that bar (barControls above), never floating over the tiles. */}
-        <ClassStage compact={!!minimized} extraControls={barControls} hands={canHost ? hands : []} />
+        <ClassStage
+          compact={!!minimized}
+          primaryControls={primaryControls}
+          extraControls={barControls}
+          hands={canHost ? hands : []}
+          onBarHeight={onBarHeight}
+        />
       </LiveKitRoom>
 
       {/* Resize grips on the four corners of the minimized window. Outside
@@ -1058,7 +1234,10 @@ function ClassTimer({ classId, canHost, minimized, onStateChange }) {
       {/* Lives in the bottom control bar (rendered through ClassStage's
           extraControls); the set-up panel pops UP over the stage from here. */}
       {(active || canHost) && (
-        <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
+        <span
+          className={active ? 'focas-timer-running' : undefined}
+          style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}
+        >
           {active ? (
             <div style={chipStyle} className={urgent ? 'animate-pulse' : undefined}>
               <span>⏱ {fmtCountdown(remaining)}</span>
@@ -1090,7 +1269,7 @@ function ClassTimer({ classId, canHost, minimized, onStateChange }) {
           )}
 
           {panelOpen && !active && canHost && (
-            <div style={{
+            <div className="focas-bar-popover" style={{
               position: 'absolute', bottom: 'calc(100% + 10px)', right: 0, zIndex: 30,
               background: 'rgba(17,17,22,0.97)', border: '1px solid rgba(255,255,255,0.18)',
               borderRadius: 12, padding: 12, width: 220,
@@ -1268,7 +1447,7 @@ function WaitingForHost({ hostIdentity }) {
 // hands: who has a hand up right now. Their names ride on this button — in
 // the bottom bar, where nothing covers a video tile — and the panel it opens
 // lists them first. Two names inline, the rest as "+N"; the tooltip has all.
-function ParticipantsButton({ open, hands = [], onClick }) {
+function ParticipantsButton({ open, hands = [], pendingRejoins = 0, onClick }) {
   const { localParticipant } = useLocalParticipant()
   const remote = useRemoteParticipants()
   const count = remote.filter((p) => p.kind === ParticipantKind.STANDARD && p.identity !== localParticipant?.identity).length
@@ -1278,7 +1457,7 @@ function ParticipantsButton({ open, hands = [], onClick }) {
   return (
     <button
       type="button"
-      className="lk-button"
+      className="lk-button focas-pbtn"
       onClick={onClick}
       title={handsTitle + (open ? 'Close the participants panel' : 'Participants — mute, stop video, ask to unmute, lock or remove students')}
       aria-label={`Participants: ${count}${names.length ? `, hand up: ${names.join(', ')}` : ''}`}
@@ -1286,13 +1465,30 @@ function ParticipantsButton({ open, hands = [], onClick }) {
       style={open ? { backgroundColor: '#0d9488', color: '#fff' } : undefined}
     >
       <span aria-hidden="true">👥</span>{count}
+      {/* A student locked out of the class is stuck until this is answered, so
+          it outranks the hands badge. */}
+      {/* On a phone both badges become corner counters (LIVE_LAYOUT_CSS), so
+          they never widen the one-row bar. */}
+      {pendingRejoins > 0 && (
+        <span
+          className="focas-pbadge focas-pbadge-rejoin"
+          title={`${pendingRejoins} asking to be let back in`}
+          style={{
+            background: '#d97706', color: '#fff', fontSize: 10, fontWeight: 800,
+            padding: '1px 7px', borderRadius: 999, marginLeft: 4,
+          }}
+        >
+          🙋 {pendingRejoins}
+        </span>
+      )}
       {names.length > 0 && (
-        <span style={{
+        <span className="focas-pbadge focas-pbadge-hand" style={{
           background: '#ca8a04', color: '#fff', fontSize: 10, fontWeight: 700,
           padding: '1px 7px', borderRadius: 999, marginLeft: 4,
           maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
-          🖐 {inline}
+          <span className="focas-pnames">🖐 {inline}</span>
+          <span className="focas-pnum">🖐{names.length}</span>
         </span>
       )}
     </button>
@@ -1328,7 +1524,7 @@ function TrackSwitcher({ tracks, activeClassId, onSwitchTrack, switching, mirror
   if (tracks.length < 2) return null
 
   return (
-    <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
+    <span className="focas-sheet-wide focas-tracks" style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
       {tracks.map((t) => {
         const active = !!t.classId && t.classId === activeClassId
         const blocked = t.state === 'busy' || t.state === 'idle'

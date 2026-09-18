@@ -93,10 +93,11 @@ export default function StudentMediaGuard({ classId }) {
 
   return (
     <>
-      {/* Just above LiveKit's control bar, centred, clear of the side widgets. */}
+      {/* Just above the control bar — its measured height (--focas-bar-h, set
+          by LiveRoom), since on a phone it's a different height than on a laptop. */}
       {(lockText || notice) && (
         <div style={{
-          position: 'absolute', left: '50%', bottom: 72, transform: 'translateX(-50%)',
+          position: 'absolute', left: '50%', bottom: 'calc(var(--focas-bar-h, 64px) + 8px)', transform: 'translateX(-50%)',
           zIndex: 25, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
           maxWidth: 'min(92vw, 520px)', pointerEvents: 'none',
         }}>

@@ -86,7 +86,7 @@ export default function TrackRoomPage() {
     if (sessionRef.current?.token !== token) return
     setSession(null)
     setHandRaised(false)
-    setError(info?.removed ? 'The host removed you from this class.' : '')
+    setError(info?.removed ? (info.reason || 'The host removed you from this class.') : '')
     loadStatus()
   }
 

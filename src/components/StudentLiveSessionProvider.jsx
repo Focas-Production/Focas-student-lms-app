@@ -85,7 +85,9 @@ export default function StudentLiveSessionProvider({ children }) {
     setSession(null)
     setMinimized(false)
     setHandRaised(false)
-    setNotice(info?.removed ? 'The host removed you from this class.' : '')
+    // info.reason is set when the server said WHY just before the disconnect
+    // (the camera rule); otherwise it was the host's Remove button.
+    setNotice(info?.removed ? (info.reason || 'The host removed you from this class.') : '')
   }
 
   return (
