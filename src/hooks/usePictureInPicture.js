@@ -68,11 +68,16 @@ export function usePictureInPicture({ getStageVideo, autoEnabled = false, rearmK
   const canVideo      = typeof document !== 'undefined' && (!!document.pictureInPictureEnabled || hasWebkitPiP())
   const supported     = canDocument || canVideo
   const autoSupported = canDocument && typeof navigator !== 'undefined' && !!navigator.mediaSession?.setActionHandler
+  // FOCAS Edu for Windows (student-electron) has no Chrome tab-switch trigger.
+  // Its main process calls window.__focasAutoPip.enter()/leave() (armed below)
+  // when the app window is minimized or left, and when the user is back — so
+  // none of Chrome's conditions (https, a live mic) apply there.
+  const autoByApp = canDocument && typeof window !== 'undefined' && !!window.focasDesktop?.autoPictureInPicture
   // Chromium's AutoPictureInPictureTabHelper only considers https:// (and
   // file://) pages — http://localhost is a secure context for everything else,
   // but NOT for auto-PiP. The production site is https; dev servers usually
   // aren't, so surface this rather than look broken.
-  const autoNeedsHttps = autoSupported && typeof location !== 'undefined'
+  const autoNeedsHttps = autoSupported && !autoByApp && typeof location !== 'undefined'
     && location.protocol !== 'https:' && location.protocol !== 'file:'
   const active        = !!pipWindow || !!pipVideo
   const mode          = pipWindow ? 'document' : pipVideo ? 'video' : null
@@ -227,11 +232,23 @@ export function usePictureInPicture({ getStageVideo, autoEnabled = false, rearmK
     return () => { clearTimeout(t); unregister() }
   }, [autoEnabled, autoSupported, rearmKey])
 
+  // Desktop app trigger (see autoByApp). `leave` closes only a window that
+  // `enter` opened — a manual pop-out stays, as in Chrome.
+  useEffect(() => {
+    if (!autoEnabled || !autoByApp) return undefined
+    const api = {
+      enter: () => { if (!winRef.current) openRef.current({ auto: true }) },
+      leave: () => { if (winRef.current && autoRef.current) close('desktop app window is back') },
+    }
+    window.__focasAutoPip = api
+    return () => { if (window.__focasAutoPip === api) delete window.__focasAutoPip }
+  }, [autoEnabled, autoByApp, close])
+
   const toggle = useCallback(() => { if (active) close('toggle'); else open() }, [active, close, open])
   const clearError = useCallback(() => setError(''), [])
 
   return {
-    supported, autoSupported, autoNeedsHttps, active, mode, pipWindow, busy, error,
+    supported, autoSupported, autoNeedsHttps, autoByApp, active, mode, pipWindow, busy, error,
     open, close, toggle, clearError,
   }
 }

@@ -29,6 +29,26 @@ function HandTile() {
   )
 }
 
+// How the bottom bar fits on one line, most to least roomy (CSS for each is
+// .focas-control-row[data-fit=…] in LiveRoom's LIVE_LAYOUT_CSS):
+//   full    — every label
+//   lean    — the host's extras (Minimize, Pop out, Timer) icon-only
+//   icons   — no labels at all, LiveKit's included
+//   tight   — icons with narrower buttons and gaps
+//   compact — the phone bar: one row of essentials, the rest behind ⋯
+// Measured rather than set by breakpoints because what the bar holds varies
+// (student vs host, how many tracks, badges). Each level is tried in turn and
+// the first whose content fits the row's width wins; it all happens in one
+// synchronous pass, so the levels in between are never painted.
+const FIT_LEVELS = ['full', 'lean', 'icons', 'tight', 'compact']
+
+function fitBar(row) {
+  for (const level of FIT_LEVELS) {
+    row.dataset.fit = level
+    if (level === 'compact' || row.scrollWidth <= row.clientWidth + 1) return
+  }
+}
+
 // The class stage — LiveKit's prebuilt <VideoConference> re-assembled from the
 // same primitives, with one difference: the FOCUS layout (someone is sharing
 // a screen or is pinned).
@@ -65,8 +85,11 @@ function HandTile() {
 // The sheet also carries what the row's dropped device chevrons did, in the
 // form a phone needs: a one-tap front ↔ back camera flip (FlipCameraButton),
 // and a microphone picker for earphones / Bluetooth.
-// onBarHeight(px) — the bar's live height, so overlays can stop above it
-// however many lines it wraps to.
+// ONE LINE, ALWAYS: on a desktop the bar never wraps — a second line took
+// height from the class. It steps down only as far as it must (FIT_LEVELS,
+// measured by fitBar), ending in the compact bar above if a window is too
+// narrow even for icons.
+// onBarHeight(px) — the bar's live height, so overlays can stop above it.
 // hands — [{ id, name }] students with a hand up in this room; each one's
 // camera tile wears a 🖐 badge until they lower it or leave.
 export default function ClassStage({ compact = false, extraControls = null, primaryControls = null, hands = [], onBarHeight }) {
@@ -85,6 +108,26 @@ export default function ClassStage({ compact = false, extraControls = null, prim
     ro.observe(el)
     return () => ro.disconnect()
   }, [onBarHeight])
+
+  // Keep the bar on one line (see FIT_LEVELS). Re-fit when the window resizes
+  // and when the bar's contents change — a track chip, a raised-hand badge,
+  // "Share screen" becoming "Stop screen share".
+  useLayoutEffect(() => {
+    const el = rowRef.current
+    if (!el) return undefined
+    let frame = 0
+    const refit = () => {
+      if (frame) return
+      frame = requestAnimationFrame(() => { frame = 0; fitBar(el) })
+    }
+    fitBar(el)
+    const ro = new ResizeObserver(refit)
+    ro.observe(el)
+    // Our own data-fit writes are attribute changes, which this ignores.
+    const mo = new MutationObserver(refit)
+    mo.observe(el, { childList: true, subtree: true, characterData: true })
+    return () => { cancelAnimationFrame(frame); ro.disconnect(); mo.disconnect() }
+  }, [])
 
   // The sheet closes on a tap outside it, on Escape, and after any action in
   // it — except inside `.focas-keep-sheet` (device pickers, the background

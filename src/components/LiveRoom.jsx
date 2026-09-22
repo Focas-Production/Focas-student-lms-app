@@ -15,85 +15,11 @@ import BackgroundButton from './BackgroundButton'
 import { fmtCountdown } from '../utils/countdown'
 import { apiFetch } from '../api'
 
-// Styles for ClassStage's focus layout (see components/ClassStage.jsx): the
-// share's cell and the students' side grid. Minimized (corner window): no room
-// for the control bar or chat — expand to use them. Mic/camera keep whatever
-// state they had.
-const LIVE_LAYOUT_CSS = `
-.focas-focus-main { display: grid; min-width: 0; min-height: 0; }
-.focas-side-grid {
-  display: grid; gap: var(--lk-grid-gap); align-content: start;
-  min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden;
-}
-.focas-side-grid > * { aspect-ratio: 16 / 10; min-height: 0; }
-.focas-focus > .lk-carousel { height: 100%; }
-/* Each tile sits in a wrapper (ClassStage's HandTile) so a raised hand can be
-   laid over it; the wrapper is the grid/carousel item and the tile fills it. */
-.focas-tile { position: relative; display: grid; min-width: 0; min-height: 0; }
-.focas-tile > .lk-participant-tile { width: 100%; height: 100%; min-height: 0; }
-/* A raised hand marks the tile without covering the video: a thin amber frame
-   plus one small icon in the corner (hover it for the label). The names live
-   in the bottom bar's participants button. */
-.focas-tile[data-hand="up"] > .lk-participant-tile { box-shadow: inset 0 0 0 2px #ca8a04; }
-.focas-hand-badge {
-  position: absolute; top: 0.4rem; left: 0.4rem; z-index: 2;
-  width: 24px; height: 24px; display: grid; place-items: center;
-  background: #ca8a04; color: #fff; font-size: 13px; line-height: 1;
-  border-radius: 999px; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
-  animation: focas-hand-in 0.25s ease-out;
-}
-@keyframes focas-hand-in { from { transform: scale(0.6); opacity: 0; } to { transform: none; opacity: 1; } }
-.focas-pip .lk-control-bar, .focas-pip .focas-control-row, .focas-pip .lk-chat { display: none; }
-/* Bottom bar: LiveKit's control bar and our extra buttons share one row, so
-   they read as one toolbar. Under 760px LiveKit drops its button labels for
-   icons; ours follow suit so the row still fits a phone without wrapping. */
-.focas-control-row {
-  display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
-  border-top: 1px solid var(--lk-border-color);
-  flex: none;
-}
-.focas-control-row .lk-control-bar { border-top: 0; }
-/* LiveKit sizes the stage as "everything but one control-bar height", so a
-   bottom row that wraps to two lines — a full toolbar plus a raised-hand badge
-   on the track chip is enough — pushes its second line below the screen, and
-   the host "loses" Minimize, Pop out, the tracks and the timer. Let the stage
-   flex instead: the row takes the height it needs, the stage gives it up. */
-.focas-live .lk-grid-layout-wrapper,
-.focas-live .lk-focus-layout-wrapper { height: auto; flex: 1 1 0; min-height: 0; }
-/* Our buttons WRAP rather than run off the screen: a tablet-width host bar
-   used to push Background, Pop out and the tracks past both edges. */
-.focas-extra-controls {
-  display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 0.5rem;
-  padding: 0.75rem 0.75rem 0.75rem 0;
-}
-@media (max-width: 760px) {
-  .focas-extra-controls .focas-ctl-label { display: none; }
-}
-/* Host labels (Minimize, Pop out, Timer) go icon-only earlier: with the track
-   switcher in the same row, a laptop-width bar would otherwise wrap. */
-@media (max-width: 1400px) {
-  .focas-extra-controls .focas-ctl-label-wide { display: none; }
-}
-/* Wide screens: the ⋯ button and the phone-only device pickers don't exist,
-   and the sheet's contents sit inline in the row. The running timer stays at
-   the end of the row, where it always was. */
-.focas-more-btn, .focas-more-devices, .focas-sheet-note { display: none; }
-.focas-more-sheet { display: contents; }
-.focas-timer-slot { display: contents; }
-.focas-extra-controls > .focas-timer-slot > * { order: 60; }
-.focas-bg-wrap { position: relative; display: inline-flex; }
-.focas-pnum { display: none; }
-
-/* ── Compact: phones in either orientation (a landscape phone is wide but
-   only ~390px tall — a two-line bar there left the class a letterbox), and
-   touch tablets, where a host's bar wrapped to three lines. A laptop browser
-   with a mouse keeps the full bar however narrow its window. ──
-   One row: mic, camera, chat, the primary controls, ⋯, and Leave last. The
-   row's own containers dissolve (display: contents) so every button is a
-   sibling and \`order\` can put Leave at the end. */
-@media (max-width: 640px), (max-height: 500px), (pointer: coarse) and (max-width: 1100px) {
+// The compact bar (one row, ⋯ sheet), used twice in LIVE_LAYOUT_CSS: by media
+// query on phones and touch tablets, and by data-fit on a narrow desktop window.
+const COMPACT_BAR_CSS = `
   .focas-control-row {
-    position: relative; gap: 4px; padding: 6px;
+    position: relative; gap: 4px; padding: 6px; flex-wrap: wrap;
     padding-bottom: max(6px, env(safe-area-inset-bottom));
   }
   .focas-control-row .lk-control-bar,
@@ -163,6 +89,7 @@ const LIVE_LAYOUT_CSS = `
   .focas-more-sheet .focas-sheet-wide { grid-column: 1 / -1; display: flex !important; }
   .focas-more-sheet .focas-sheet-wide > .lk-button { flex: 1; }
   .focas-more-sheet .focas-tracks { justify-content: center; gap: 6px !important; }
+  .focas-control-row .focas-more-sheet .focas-tracks { flex-wrap: wrap !important; }
   .focas-more-sheet .focas-tracks > span { flex: 1; }
   .focas-more-sheet .focas-tracks .lk-button { justify-content: center; }
 
@@ -197,7 +124,99 @@ const LIVE_LAYOUT_CSS = `
   .focas-control-row .focas-pnum { display: inline !important; }
   /* Top-of-stage banners sit under the title chip, not on top of it. */
   .focas-top-banner { top: 40px !important; }
+`
+
+// Styles for ClassStage's focus layout (see components/ClassStage.jsx): the
+// share's cell and the students' side grid. Minimized (corner window): no room
+// for the control bar or chat — expand to use them. Mic/camera keep whatever
+// state they had.
+const LIVE_LAYOUT_CSS = `
+.focas-focus-main { display: grid; min-width: 0; min-height: 0; }
+.focas-side-grid {
+  display: grid; gap: var(--lk-grid-gap); align-content: start;
+  min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden;
 }
+.focas-side-grid > * { aspect-ratio: 16 / 10; min-height: 0; }
+.focas-focus > .lk-carousel { height: 100%; }
+/* Each tile sits in a wrapper (ClassStage's HandTile) so a raised hand can be
+   laid over it; the wrapper is the grid/carousel item and the tile fills it. */
+.focas-tile { position: relative; display: grid; min-width: 0; min-height: 0; }
+.focas-tile > .lk-participant-tile { width: 100%; height: 100%; min-height: 0; }
+/* A raised hand marks the tile without covering the video: a thin amber frame
+   plus one small icon in the corner (hover it for the label). The names live
+   in the bottom bar's participants button. */
+.focas-tile[data-hand="up"] > .lk-participant-tile { box-shadow: inset 0 0 0 2px #ca8a04; }
+.focas-hand-badge {
+  position: absolute; top: 0.4rem; left: 0.4rem; z-index: 2;
+  width: 24px; height: 24px; display: grid; place-items: center;
+  background: #ca8a04; color: #fff; font-size: 13px; line-height: 1;
+  border-radius: 999px; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  animation: focas-hand-in 0.25s ease-out;
+}
+@keyframes focas-hand-in { from { transform: scale(0.6); opacity: 0; } to { transform: none; opacity: 1; } }
+.focas-pip .lk-control-bar, .focas-pip .focas-control-row, .focas-pip .lk-chat { display: none; }
+/* Bottom bar: LiveKit's control bar and our extra buttons share ONE line, so
+   they read as one toolbar and a second line never takes height from the
+   class. When it doesn't fit, ClassStage steps it down (data-fit, measured):
+   full labels → "lean" (host extras icon-only) → "icons" (every label gone,
+   LiveKit's too) → "tight" (icons, less spacing) → "compact" (the phone bar
+   with its ⋯ sheet, below). */
+.focas-control-row {
+  display: flex; align-items: center; justify-content: center; flex-wrap: nowrap;
+  gap: 0.5rem; padding: 0.75rem;
+  border-top: 1px solid var(--lk-border-color);
+  flex: none;
+}
+/* LiveKit's bar and ours dissolve into the row, so every button is a sibling
+   and Leave can sit at the far end (as in Meet), not mid-bar beside 👥. */
+.focas-control-row .lk-control-bar,
+.focas-control-row .focas-extra-controls { display: contents; }
+.focas-control-row .lk-disconnect-button { order: 100; }
+/* Nothing squeezes: a label that wrapped inside its button would make the bar
+   taller instead of letting the fit step down. */
+.focas-control-row :is(.lk-button, .lk-chat-toggle, .lk-disconnect-button) { white-space: nowrap; flex-shrink: 0; }
+.focas-control-row .focas-tracks { flex-wrap: nowrap !important; }
+.focas-control-row[data-fit="lean"] .focas-ctl-label-wide,
+.focas-control-row:is([data-fit="icons"], [data-fit="tight"]) :is(.focas-ctl-label, .focas-ctl-label-wide, .focas-pnames) { display: none; }
+.focas-control-row:is([data-fit="icons"], [data-fit="tight"]) .focas-pnum { display: inline; }
+/* LiveKit's labels (Microphone, Camera, Share screen, Chat, Leave) are bare
+   text beside a fixed-size SVG: font-size 0 hides the text, not the icon. Not
+   on the device chevron, which is drawn in em; the chat badge is in rem. */
+.focas-control-row:is([data-fit="icons"], [data-fit="tight"]) .lk-control-bar :is(.lk-button, .lk-chat-toggle, .lk-disconnect-button):not(.lk-button-menu) { font-size: 0; gap: 0; }
+/* tight — the last step before the compact bar: icons with less air, so a
+   host keeps the tracks and Pop out in the row on a laptop-width window. */
+.focas-control-row[data-fit="tight"] { gap: 0.3rem; padding-left: 0.5rem; padding-right: 0.5rem; }
+.focas-control-row[data-fit="tight"] :is(.lk-button, .lk-chat-toggle, .lk-disconnect-button) { padding-left: 0.6rem; padding-right: 0.6rem; }
+/* LiveKit sizes the stage as "everything but one control-bar height", so a
+   bottom row that wraps to two lines — a full toolbar plus a raised-hand badge
+   on the track chip is enough — pushes its second line below the screen, and
+   the host "loses" Minimize, Pop out, the tracks and the timer. Let the stage
+   flex instead: the row takes the height it needs, the stage gives it up. */
+.focas-live .lk-grid-layout-wrapper,
+.focas-live .lk-focus-layout-wrapper { height: auto; flex: 1 1 0; min-height: 0; }
+/* Wide screens: the ⋯ button and the phone-only device pickers don't exist,
+   and the sheet's contents sit inline in the row. The running timer stays at
+   the end of the row, where it always was. */
+.focas-more-btn, .focas-more-devices, .focas-sheet-note { display: none; }
+.focas-more-sheet { display: contents; }
+.focas-timer-slot { display: contents; }
+.focas-extra-controls > .focas-timer-slot > * { order: 60; }
+.focas-bg-wrap { position: relative; display: inline-flex; }
+.focas-pnum { display: none; }
+
+/* ── Compact: phones in either orientation (a landscape phone is wide but
+   only ~390px tall — a two-line bar there left the class a letterbox), and
+   touch tablets, where a host's bar wrapped to three lines. A laptop with a
+   mouse keeps the desktop bar (icon-only if need be) until even that no
+   longer fits — then data-fit="compact" brings this one in too. ──
+   One row: mic, camera, chat, the primary controls, ⋯, and Leave last. The
+   row's own containers dissolve (display: contents) so every button is a
+   sibling and \`order\` can put Leave at the end. */
+@media (max-width: 640px), (max-height: 500px), (pointer: coarse) and (max-width: 1100px) {
+${COMPACT_BAR_CSS}}
+/* A desktop window too narrow even for the icon-only bar (ClassStage sets
+   data-fit="compact") gets the same bar, via native CSS nesting. */
+.focas-live:has(.focas-control-row[data-fit="compact"]) {${COMPACT_BAR_CSS}}
 @keyframes focas-sheet-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 `
 
@@ -480,7 +499,9 @@ function LiveRoomInner({
     shellRef.current?.style.setProperty('--focas-bar-h', `${h}px`)
   }, [])
   // Why Auto can't fire right now, if it can't: 'https' | 'media' | null.
-  const autoBlockedBy = !autoPip ? null : pip.autoNeedsHttps ? 'https' : !capturing ? 'media' : null
+  // The desktop app fires it itself (pip.autoByApp), mic or not.
+  const autoNeedsMic = !capturing && !pip.autoByApp
+  const autoBlockedBy = !autoPip ? null : pip.autoNeedsHttps ? 'https' : autoNeedsMic ? 'media' : null
   // Handed up by LocalMediaProbe so the hint can switch the mic on directly.
   const enableMicRef = useRef(null)
   const onMicControl = useCallback((fn) => { enableMicRef.current = fn }, [])
@@ -493,7 +514,7 @@ function LiveRoomInner({
     setAutoPip(next)
     try { localStorage.setItem(AUTO_PIP_KEY, next ? '1' : '0') } catch { /* private mode */ }
     clearTimeout(autoHintTimer.current)
-    const reason = next ? (pip.autoNeedsHttps ? AUTO_NEEDS_HTTPS : !capturing ? AUTO_NEEDS_MEDIA : '') : ''
+    const reason = next ? (pip.autoNeedsHttps ? AUTO_NEEDS_HTTPS : autoNeedsMic ? AUTO_NEEDS_MEDIA : '') : ''
     setAutoHint(reason)
     if (reason) autoHintTimer.current = setTimeout(() => setAutoHint(''), 12_000)
   }
@@ -556,7 +577,11 @@ function LiveRoomInner({
           className="lk-button"
           onClick={toggleAutoPip}
           aria-pressed={!!autoPip}
-          title={!autoPip
+          title={pip.autoByApp
+            ? (autoPip
+              ? 'Auto pop-out is ON: the class floats by itself when you minimize FOCAS Edu or switch to another app, and goes back when you return. Click to turn off.'
+              : 'Auto pop-out is OFF. Click to have the class float by itself whenever you minimize FOCAS Edu or switch to another app.')
+            : !autoPip
             ? 'Auto pop-out is OFF. Click to have the class float by itself whenever you switch to another tab (https site, with your mic or camera on).'
             : autoBlockedBy === 'https'
               ? 'Auto pop-out is ON but Chrome only auto-floats https pages — it will work on the live site, not on this address. Use "Pop out" here. Click to turn Auto off.'
@@ -988,7 +1013,7 @@ function LiveRoomInner({
             onChange={setCapturing}
             onMicControl={onMicControl}
             onPlaying={onPlayerPlaying}
-            keepAlive={autoPip && pip.autoSupported && !pip.autoNeedsHttps}
+            keepAlive={autoPip && pip.autoSupported && !pip.autoNeedsHttps && !pip.autoByApp}
           />
         )}
 
@@ -1628,3 +1653,4 @@ function TrackSwitcher({ tracks, activeClassId, onSwitchTrack, switching, mirror
     </span>
   )
 }
+
