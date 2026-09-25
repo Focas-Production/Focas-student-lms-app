@@ -4,7 +4,7 @@ import PdfViewer from '../../components/PdfViewer'
 
 const TYPE_LABELS = {
   chapter_wise: 'Chapter-wise',
-  segment_wise: 'Subject-wise',
+  segment_wise: 'Segment-wise',
   full_test:    'Full Test',
 }
 const ATTEMPT_KEY = 'active_test_attempt'
@@ -125,12 +125,27 @@ export default function TestSeriesPage() {
     setStarting(false)
     const current = fresh.find(f => f.contentId === file.contentId)
     if (!current) { setStartError('This test is no longer available.'); return }
+    if (current.locked) { setStartError(current.lockedReason || 'This test is not included in your plan.'); return }
     if (attemptsLeftOf(current) <= 0) {
       const lim = current.attemptLimit ?? 1
       setStartError(lim === 1
         ? 'You have already submitted this test. Only one attempt is allowed.'
         : `You have reached the maximum of ${lim} attempts allowed for this test.`)
       return
+    }
+    // Starting a paper uses one test from the plan's allowance (if the plan
+    // has one) — the server refuses here, before the timer starts.
+    if (current.allowance && !current.started) {
+      setStarting(true)
+      try {
+        await apiFetch('/api/test-series/start', { method: 'POST', body: JSON.stringify({ contentId: current.contentId }) })
+      } catch (e) {
+        setStarting(false)
+        setStartError(e.message || 'Could not start this test. Please try again.')
+        loadCatalog()
+        return
+      }
+      setStarting(false)
     }
     const a = {
       contentId: current.contentId, fileName: current.fileName, level: current.level,
@@ -248,6 +263,8 @@ function CascadePicker({ loading, catalog, types, levels, subjects, chapters, un
       {selectedFile && (() => {
         const attemptsLeft = selectedFile.attemptsLeft ?? Math.max(0, (selectedFile.attemptLimit ?? 1) - (selectedFile.attemptsUsed ?? 0))
         const exhausted = attemptsLeft <= 0
+        const al = selectedFile.allowance
+        const typeName = (TYPE_LABELS[selectedFile.testSeriesType] || 'test').toLowerCase()
         return (
           <div className={`flex items-center gap-4 rounded-xl px-4 py-3 text-sm ${exhausted ? 'bg-red-50' : 'bg-indigo-50'}`}>
             <div className="flex-1">
@@ -256,10 +273,17 @@ function CascadePicker({ loading, catalog, types, levels, subjects, chapters, un
                 Duration {selectedFile.testDuration} min · {selectedFile.totalMarks} marks
               </p>
               <p className={`text-xs mt-1 font-medium ${exhausted ? 'text-red-700' : 'text-indigo-700'}`}>
-                {exhausted
+                {selectedFile.locked
+                  ? selectedFile.lockedReason
+                  : exhausted
                   ? ((selectedFile.attemptLimit ?? 1) === 1 ? 'Already submitted — no attempts left' : 'No attempts left for this test')
                   : `${attemptsLeft} of ${selectedFile.attemptLimit ?? 1} attempt${(selectedFile.attemptLimit ?? 1) !== 1 ? 's' : ''} remaining`}
               </p>
+              {al && !selectedFile.locked && !selectedFile.started && (
+                <p className="text-xs mt-1 text-indigo-600">
+                  Your plan: {al.used} of {al.limit} {typeName} tests used for {selectedFile.subject}. Starting this one uses 1.
+                </p>
+              )}
             </div>
           </div>
         )

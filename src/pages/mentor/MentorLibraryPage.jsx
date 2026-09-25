@@ -18,7 +18,7 @@ const LEVEL_STYLE = {
 }
 const TS_TYPE_LABELS = {
   chapter_wise: 'Chapter-wise',
-  segment_wise: 'Subject-wise',
+  segment_wise: 'Segment-wise',
   full_test:    'Full Test',
 }
 
