@@ -98,6 +98,11 @@ export default function LiveClassesPage() {
   // mentor opens the door we can say so — they are outside the room, so this
   // poll IS their notification channel.
   const lockedRef = useRef(new Set())
+  // Kept in refs so load() stays stable (the poll interval depends on it).
+  const sessionRef = useRef(session)
+  useEffect(() => { sessionRef.current = session }, [session])
+  const enterRef = useRef(enterClass)
+  useEffect(() => { enterRef.current = enterClass }, [enterClass])
 
   const load = useCallback(async () => {
     try {
@@ -106,11 +111,24 @@ export default function LiveClassesPage() {
       const wasLocked = lockedRef.current
       const freed = list.find((c) => c.status === 'live' && !c.removed && wasLocked.has(c._id))
       lockedRef.current = new Set(list.filter((c) => c.removed).map((c) => c._id))
+      setClasses(list)
       if (freed) {
+        // Let back in → straight into the room, no second click. Skipped when
+        // they're already sitting in some other class (minimized) — joining
+        // would drop them out of it — so they get the banner + Join now instead.
+        if (!sessionRef.current) {
+          try {
+            await enterRef.current(freed)
+            playLetInChime()
+            setLetIn(`Your mentor let you back into “${freed.title}” — you're in the class now. Keep your camera on.`)
+            return
+          } catch {
+            // Fall through to the manual path below.
+          }
+        }
         playLetInChime()
         setLetIn(`Your mentor let you back into “${freed.title}”. You can join again — keep your camera on.`)
       }
-      setClasses(list)
     } catch {
       setClasses([])
     }
@@ -274,20 +292,24 @@ function playLetInChime() {
     const Ctx = window.AudioContext || window.webkitAudioContext
     if (!Ctx) return
     const ctx = new Ctx()
+    // A context can start suspended; the student clicked "Ask to be let back
+    // in" on this page, so resuming is allowed.
+    ctx.resume?.().catch(() => {})
     const t0 = ctx.currentTime
-    ;[[659.25, 0], [987.77, 0.15]].forEach(([freq, at]) => {
+    // Rising three-note "you're in" — distinct from the room's other chimes.
+    ;[[523.25, 0], [659.25, 0.16], [987.77, 0.32]].forEach(([freq, at]) => {
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
       osc.type = 'sine'
       osc.frequency.value = freq
       gain.gain.setValueAtTime(0.0001, t0 + at)
-      gain.gain.exponentialRampToValueAtTime(0.25, t0 + at + 0.02)
-      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.4)
+      gain.gain.exponentialRampToValueAtTime(0.35, t0 + at + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.5)
       osc.connect(gain).connect(ctx.destination)
       osc.start(t0 + at)
-      osc.stop(t0 + at + 0.42)
+      osc.stop(t0 + at + 0.52)
     })
-    setTimeout(() => { ctx.close().catch(() => {}) }, 1200)
+    setTimeout(() => { ctx.close().catch(() => {}) }, 1500)
   } catch {
     // Sound is a nicety — the banner still shows.
   }
