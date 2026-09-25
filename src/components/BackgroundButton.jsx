@@ -5,9 +5,11 @@ import {
 } from '../hooks/useVideoBackground'
 import { BACKGROUND_PRESETS, fileToBackgroundDataUrl } from '../utils/backgroundPresets'
 
-// The host's "Background" control: a bottom-bar button that opens Meet's
-// Backgrounds tab — off, two strengths of blur, a few preset backgrounds, and
-// the mentor's own image. Must live inside <LiveKitRoom> to reach the camera.
+// The "Background" control: a bottom-bar button that opens Meet's Backgrounds
+// tab — off, two strengths of blur, a few preset backgrounds, and (mentors
+// only) their own image. Students get the same panel minus the upload, and a
+// watchdog that switches it off on a device that can't keep up (see
+// useVideoBackground). Must live inside <LiveKitRoom> to reach the camera.
 //
 // Button and panel are one component on purpose: the choice is the only state
 // they share, and keeping it here means LiveRoom doesn't have to thread it
@@ -18,11 +20,11 @@ import { BACKGROUND_PRESETS, fileToBackgroundDataUrl } from '../utils/background
 
 const TILE = 54
 
-export default function BackgroundButton() {
+export default function BackgroundButton({ forStudent = false }) {
   const { cameraTrack } = useLocalParticipant()
   const {
-    choice, choose, customImage, saveCustomImage, busy, error, setError,
-  } = useVideoBackground({ cameraTrack, enabled: true })
+    choice, choose, customImage, saveCustomImage, busy, error, setError, allowCustom,
+  } = useVideoBackground({ cameraTrack, enabled: true, forStudent })
   const [open, setOpen] = useState(false)
   const wrapRef = useRef(null)
   const fileRef = useRef(null)
@@ -67,7 +69,7 @@ export default function BackgroundButton() {
         title={
           error ? `${error} Open to try again.`
             : on ? 'Background is on — click to change it or turn it off'
-              : 'Background — blur or replace the room behind you. It runs on this computer, so it uses some CPU.'
+              : 'Background — blur or replace the room behind you. It runs on this device, so it uses some battery and processing power.'
         }
         aria-label="Background effects"
         aria-expanded={open}
@@ -124,17 +126,19 @@ export default function BackgroundButton() {
                   : `linear-gradient(150deg, ${p.stops[0]}, ${p.stops[1]})`}
               />
             ))}
-            <Tile
-              selected={choice === CUSTOM && !!customImage}
-              onClick={() => (customImage ? choose(CUSTOM) : fileRef.current?.click())}
-              label={customImage ? 'Yours' : 'Upload'}
-              background={customImage ? `center/cover url(${customImage})` : undefined}
-            >
-              {!customImage && <span style={{ fontSize: 20 }} aria-hidden="true">＋</span>}
-            </Tile>
+            {allowCustom && (
+              <Tile
+                selected={choice === CUSTOM && !!customImage}
+                onClick={() => (customImage ? choose(CUSTOM) : fileRef.current?.click())}
+                label={customImage ? 'Yours' : 'Upload'}
+                background={customImage ? `center/cover url(${customImage})` : undefined}
+              >
+                {!customImage && <span style={{ fontSize: 20 }} aria-hidden="true">＋</span>}
+              </Tile>
+            )}
           </Section>
 
-          {customImage && (
+          {allowCustom && customImage && (
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
@@ -147,19 +151,23 @@ export default function BackgroundButton() {
             </button>
           )}
 
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            onChange={onPick}
-            style={{ display: 'none' }}
-          />
+          {allowCustom && (
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              onChange={onPick}
+              style={{ display: 'none' }}
+            />
+          )}
 
           {error && (
             <p style={{ margin: '10px 0 0', fontSize: 12, color: '#fca5a5' }}>{error}</p>
           )}
           <p style={{ margin: '10px 0 0', fontSize: 11, color: '#9aa0a6', lineHeight: 1.45 }}>
-            Runs on this computer. If the class turns choppy, switch back to Off.
+            {forStudent
+              ? 'Runs on this device. If your video gets choppy it switches itself off.'
+              : 'Runs on this computer. If the class turns choppy, switch back to Off.'}
           </p>
         </div>
       )}

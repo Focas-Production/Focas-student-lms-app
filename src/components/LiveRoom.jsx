@@ -685,6 +685,10 @@ function LiveRoomInner({
       )}
     </>
   ) : null
+  // Students' own blur / preset backgrounds. In the bar on a laptop, in the ⋯
+  // sheet on a phone. Upload-free and self-disabling on a slow device — see
+  // useVideoBackground.
+  const studentBackground = canHost ? null : <BackgroundButton forStudent />
 
   // Host controls — everything that used to float over the stage: Pop out /
   // Auto, the participants drawer, and the track switcher. Same bar, same look.
@@ -755,7 +759,7 @@ function LiveRoomInner({
       )}
     </>
   ) : null
-  const barControls = (!SCREEN_SHARE_SUPPORTED || studentControls || hostControls || onToggleMinimize) ? (
+  const barControls = (!SCREEN_SHARE_SUPPORTED || studentBackground || studentControls || hostControls || onToggleMinimize) ? (
     <>
       {!SCREEN_SHARE_SUPPORTED && (
         <button
@@ -772,6 +776,7 @@ function LiveRoomInner({
           <span className="focas-sheet-note">· laptop only</span>
         </button>
       )}
+      {studentBackground}
       {studentControls}
       {onToggleMinimize && (
         <button
