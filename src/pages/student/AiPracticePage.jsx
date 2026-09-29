@@ -356,6 +356,86 @@ function GeneratedCard({ gen }) {
             </div>
           </details>
         )}
+
+        <ReportAiQuestion generatedId={gen._id} />
+      </div>
+    </div>
+  )
+}
+
+// Every AI question can be reported. The app stores require it for generated
+// content (Microsoft Store policy 11.16, Google Play's AI rules), and it is how
+// we hear about a bad answer at all — the automatic checker only catches some.
+const REPORT_REASONS = [
+  ['incorrect',     'Wrong or misleading answer'],
+  ['inappropriate', 'Offensive or inappropriate'],
+  ['confusing',     "Doesn't make sense"],
+  ['other',         'Something else'],
+]
+
+function ReportAiQuestion({ generatedId }) {
+  const [open, setOpen]     = useState(false)
+  const [reason, setReason] = useState('')
+  const [note, setNote]     = useState('')
+  const [busy, setBusy]     = useState(false)
+  const [sent, setSent]     = useState(false)
+  const [error, setError]   = useState('')
+
+  const send = async () => {
+    setBusy(true); setError('')
+    try {
+      await apiFetch(`/api/ai-questions/generated/${generatedId}/report`, {
+        method: 'POST',
+        body: JSON.stringify({ reason, note }),
+      })
+      setSent(true)
+    } catch (e) {
+      setError(e.message || 'Could not send the report. Please try again.')
+    } finally { setBusy(false) }
+  }
+
+  if (sent) {
+    return (
+      <p className="mt-3 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+        Thanks — we've got your report. Our team will check this question.
+      </p>
+    )
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+        className="mt-3 text-[11px] font-semibold text-gray-400 hover:text-red-600">
+        ⚑ Report this question
+      </button>
+    )
+  }
+
+  return (
+    <div className="mt-3 border border-gray-200 rounded-xl p-3">
+      <p className="text-xs font-bold text-gray-700 mb-2">What's wrong with this AI question?</p>
+      <div className="space-y-1.5">
+        {REPORT_REASONS.map(([value, label]) => (
+          <label key={value} className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+            <input type="radio" name={`ai-report-${generatedId}`} value={value}
+              checked={reason === value} onChange={() => setReason(value)} />
+            {label}
+          </label>
+        ))}
+      </div>
+      <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={1000}
+        placeholder="Anything else we should know? (optional)"
+        className="mt-2 w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+      {error && <p className="text-[11px] text-red-500 mt-1">{error}</p>}
+      <div className="flex gap-2 mt-2">
+        <button onClick={send} disabled={!reason || busy}
+          className="flex-1 py-2 rounded-lg bg-red-600 text-white font-semibold text-xs hover:bg-red-700 disabled:bg-gray-200 disabled:text-gray-400">
+          {busy ? 'Sending…' : 'Send report'}
+        </button>
+        <button onClick={() => { setOpen(false); setError('') }}
+          className="px-3 py-2 rounded-lg border border-gray-200 text-gray-600 font-semibold text-xs hover:bg-gray-50">
+          Cancel
+        </button>
       </div>
     </div>
   )
