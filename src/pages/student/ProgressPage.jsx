@@ -8,6 +8,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { apiFetch } from '../../api'
 import { enrollmentLabel } from '../../lib/ca'
+import { TOPIC_STATES, STATE_META, topicState, countStates, describeTopic } from '../../lib/topicState'
 
 // ───────────────────────────── formatting ─────────────────────────────
 
@@ -146,94 +147,54 @@ async function openInTab(path, onError) {
 
 // ───────────────────────────── subjects tab ─────────────────────────────
 
-const SUBJECT_FILTERS = [
-  { key: 'all',         label: 'All' },
-  { key: 'in-progress', label: 'In progress' },
-  { key: 'completed',   label: 'Completed' },
-  { key: 'not-started', label: 'Not started' },
-]
-
-// Every chapter/topic row sits on one ladder the server computes from live-class
-// attendance: not-allotted → allotted → attended → completed. These chips slice
-// the rows by rung; the subject chips above slice by paper.
-const STATUS_FILTERS = [
-  { key: 'all',          label: 'All topics' },
-  { key: 'not-allotted', label: 'Not allotted' },
-  { key: 'allotted',     label: 'Allotted' },
-  { key: 'attended',     label: 'Attended' },
-  { key: 'completed',    label: 'Completed' },
-]
-const STATUS_META = {
-  'not-allotted': { label: 'Not allotted', tone: 'gray' },
-  allotted:       { label: 'Allotted',     tone: 'indigo' },
-  attended:       { label: 'Attended',     tone: 'amber' },
-  completed:      { label: '✓ Done',       tone: 'emerald' },
+const PAPER_STATUS = {
+  completed:     { label: 'Finished',     tone: 'emerald' },
+  'in-progress': { label: 'In progress',  tone: 'amber' },
+  'not-started': { label: 'No class yet', tone: 'gray' },
 }
+const NO_CLASSES = { booked: 0, held: 0, attended: 0, missed: 0, live: 0, upcoming: 0, nextClassAt: null }
 
-// One badge per rung. Under "allotted" the server's pendingKind says whether
-// the class is running now or already went by without them — both worth their
-// own word. Works for a row (pendingKind) and a rolled-up chapter (liveNow /
-// missedSessions / nextClassAt).
-function statusBadge(x) {
-  if (x.status === 'allotted') {
-    const live = x.pendingKind === 'live' || x.liveNow
-    const missed = x.pendingKind === 'missed' || (x.pendingKind == null && x.missedSessions > 0 && !x.nextClassAt)
-    if (live) return { label: 'Live now', tone: 'rose' }
-    if (missed) return { label: 'Missed', tone: 'rose' }
-  }
-  return STATUS_META[x.status] || STATUS_META['not-allotted']
-}
-
-const rowMatches = (row, filter) => filter === 'all' || row.status === filter
-
-// The grey line under a topic: what happened, and what comes next.
-function rowDetail(row) {
-  const parts = []
-  if (row.sessions) parts.push(`${row.sessions} class${row.sessions !== 1 ? 'es' : ''} · you attended ${row.percent}%`)
-  if (row.pendingKind === 'live') parts.push(row.joinedLive ? "You're in this class now" : 'A class is live now — join from Live classes')
-  else if (row.pendingKind === 'upcoming') parts.push(`Next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`)
-  else if (row.pendingKind === 'missed') parts.push(`You missed ${row.missedSessions} class${row.missedSessions !== 1 ? 'es' : ''}`)
-  else if (row.pendingKind === 'not-allotted') parts.push('No class scheduled yet')
-  else if (row.nextClassAt) parts.push(`Next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`)
-  return parts.join(' · ')
-}
-
-function TopicRow({ row }) {
-  const badge = statusBadge(row)
+// One plain state per topic (lib/topicState) — the badge, the line under the
+// topic and the filter chips all use it, so the numbers always agree.
+function TopicRow({ row, threshold }) {
+  const state = STATE_META[topicState(row)]
+  const live = row.pendingKind === 'live' && !row.completed
+  const line = describeTopic(row, { threshold, you: true })
   return (
     <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl">
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-gray-900 break-words">{row.unitName || row.chapterName}</p>
-        <p className="text-xs text-gray-400 mt-1">
-          {rowDetail(row)}
-          {!row.completed && row.reason === 'attendance' && <span className="text-amber-600"> · attend more to complete</span>}
-          {!row.completed && row.reason === 'teaching' && <span className="text-gray-400"> · still being taught</span>}
+        <p className="text-xs text-gray-500 mt-1">
+          {line.text}
+          {line.why && <span className={TEXT[line.tone] || 'text-gray-400'}> — {line.why}</span>}
         </p>
       </div>
-      <Badge tone={badge.tone}>{badge.label}</Badge>
+      <Badge tone={live ? 'rose' : state.tone}>{live ? 'Live now' : state.label}</Badge>
     </div>
   )
 }
 
-function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen }) {
+function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen, forceOpen, threshold }) {
   const [open, setOpen] = useState(defaultOpen)
   const q = query.trim().toLowerCase()
   // A live search or a status filter forces every card open — a collapsed
   // match looks like no match.
-  const expanded = (q || rowFilter !== 'all') ? true : open
+  const expanded = (q || rowFilter !== 'all' || forceOpen) ? true : open
 
   // Search narrows by name (a matching chapter keeps every topic); the status
-  // chips then narrow by rung. A chapter with nothing left disappears.
+  // chips then narrow by state. A chapter with nothing left disappears.
   const chapters = subject.chapters
     .map(ch => {
       const rows = (q && !ch.name.toLowerCase().includes(q))
         ? ch.rows.filter(r => (r.unitName || '').toLowerCase().includes(q))
         : ch.rows
-      return { ...ch, rows: rows.filter(r => rowMatches(r, rowFilter)) }
+      return { ...ch, rows: rows.filter(r => rowFilter === 'all' || topicState(r) === rowFilter) }
     })
     .filter(ch => ch.rows.length)
 
   const tone = subject.status === 'completed' ? 'emerald' : toneFor(subject.percent)
+  const counts = countStates(subject.chapters.flatMap(c => c.rows))
+  const notDone = TOPIC_STATES.filter(s => s.key !== 'done' && counts[s.key] > 0)
 
   return (
     <Card className="overflow-hidden">
@@ -243,15 +204,19 @@ function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-semibold text-gray-900">{subject.name}</p>
-            {subject.status === 'completed' && <Badge tone="emerald">Completed</Badge>}
-            {subject.status === 'not-started' && <Badge tone="gray">Not started</Badge>}
+            {subject.status === 'completed' && <Badge tone="emerald">Finished</Badge>}
+            {subject.status === 'not-started' && <Badge tone="gray">No class yet</Badge>}
           </div>
           <div className="flex items-center gap-2 mt-1.5">
             <Bar percent={subject.percent} tone={tone} className="flex-1 max-w-[200px]" />
             <span className={`text-xs font-semibold flex-shrink-0 ${TEXT[tone]}`}>{subject.percent}%</span>
           </div>
-          <p className="text-[11px] text-gray-400 mt-1">
-            {subject.completedChapters}/{subject.totalChapters} chapters · {subject.completedItems}/{subject.totalItems} topics
+          <p className="text-[11px] text-gray-500 mt-1">
+            {subject.completedItems} of {subject.totalItems} topics done
+            <span className="text-gray-400"> ({subject.completedChapters} of {subject.totalChapters} chapters)</span>
+            {notDone.map(s => (
+              <span key={s.key} className={TEXT[s.tone] || 'text-gray-400'}> · {counts[s.key]} {s.label.toLowerCase()}</span>
+            ))}
           </p>
         </div>
       </button>
@@ -266,19 +231,18 @@ function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen }) {
             // A chapter with no units is one row that already carries its name
             // and its own status badge.
             const single = ch.rows.length === 1 && !ch.rows[0].unitName
-            const chBadge = statusBadge(ch)
             return (
               <div key={ch.chapterId}>
                 {!single && (
                   <div className="flex items-center gap-2 mb-1.5 px-1">
                     <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide flex-1 min-w-0 truncate">{ch.name}</p>
-                    <Badge tone={chBadge.tone}>{chBadge.label}</Badge>
+                    {ch.completed && <Badge tone="emerald">Chapter done</Badge>}
                     <Bar percent={ch.percent} tone={ch.completed ? 'emerald' : toneFor(ch.percent)} className="w-16 flex-shrink-0" />
-                    <span className="text-[10px] text-gray-400 flex-shrink-0">{ch.done}/{ch.total}</span>
+                    <span className="text-[10px] text-gray-400 flex-shrink-0">{ch.completed ? ch.total : ch.done} of {ch.total} done</span>
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  {ch.rows.map(r => <TopicRow key={`${r.chapterId}:${r.unitId || ''}`} row={r} />)}
+                  {ch.rows.map(r => <TopicRow key={`${r.chapterId}:${r.unitId || ''}`} row={r} threshold={threshold} />)}
                 </div>
               </div>
             )
@@ -289,15 +253,40 @@ function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen }) {
   )
 }
 
-function SubjectsTab({ syllabus }) {
-  const [filter, setFilter] = useState('all')
+// "Syllabus" and "Classes" counters, for all papers or the one picked.
+function SummaryRow({ title, items }) {
+  return (
+    <div className="flex items-start gap-3 px-4 py-3 border-b border-gray-100 last:border-b-0">
+      <p className="w-16 flex-shrink-0 pt-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{title}</p>
+      <div className="flex-1 grid grid-cols-3 sm:grid-cols-5 gap-x-4 gap-y-2">
+        {items.map(t => (
+          <div key={t.label} className="min-w-0">
+            <p className={`text-base font-bold leading-tight ${TEXT[t.tone] || 'text-gray-900'}`}>{t.value}</p>
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">{t.label}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function SubjectsTab({ syllabus, classes, thresholdPercent }) {
+  // '' = every paper, else one paper's id. The counters, the topic chips and
+  // the list all follow the picked paper.
+  const [paperId, setPaperId] = useState('')
   const [rowFilter, setRowFilter] = useState('all')
   const [query, setQuery] = useState('')
 
+  const paper = paperId ? syllabus.subjects.find(s => s.subjectId === paperId) || null : null
+  const papers = useMemo(() => (paper ? [paper] : syllabus.subjects), [paper, syllabus])
+  const stateCounts = useMemo(() => countStates(papers.flatMap(s => s.chapters.flatMap(c => c.rows))), [papers])
+  const totals = paper || syllabus
+  // Counted once per class by the server; a paper with no class has no entry.
+  const cls = !classes ? null : paper ? (classes.bySubject?.[paper.subjectId] || NO_CLASSES) : classes
+
   const q = query.trim().toLowerCase()
-  const visible = syllabus.subjects.filter(s =>
-    (filter === 'all' || s.status === filter) &&
-    (rowFilter === 'all' || s.chapters.some(ch => ch.rows.some(r => rowMatches(r, rowFilter)))) &&
+  const visible = papers.filter(s =>
+    (rowFilter === 'all' || s.chapters.some(ch => ch.rows.some(r => topicState(r) === rowFilter))) &&
     (!q || s.name.toLowerCase().includes(q) ||
       s.chapters.some(ch => ch.name.toLowerCase().includes(q) || ch.rows.some(r => (r.unitName || '').toLowerCase().includes(q)))))
 
@@ -305,26 +294,57 @@ function SubjectsTab({ syllabus }) {
     return <Empty title="No chapters yet" hint="Once you attend tutor sessions, your chapter progress shows up here." />
   }
 
-  const statusCount = (key) => (key === 'all' ? syllabus.totalItems : (syllabus.itemStatusCounts?.[key] ?? 0))
-
   return (
     <div className="space-y-3">
       <div className="flex gap-2 flex-col sm:flex-row sm:items-center">
-        <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
-          {SUBJECT_FILTERS.map(f => (
-            <Chip key={f.key} active={filter === f.key} onClick={() => setFilter(f.key)}>
-              {f.label} {f.key === 'all' ? syllabus.subjects.length : syllabus.subjects.filter(s => s.status === f.key).length}
-            </Chip>
+        <select value={paper ? paperId : ''} onChange={e => setPaperId(e.target.value)} className={`${selectCls} sm:max-w-[260px]`}>
+          <option value="">All papers ({syllabus.subjects.length})</option>
+          {syllabus.subjects.map(s => (
+            <option key={s.subjectId} value={s.subjectId}>{s.name} — {s.completedItems}/{s.totalItems} done</option>
           ))}
-        </div>
+        </select>
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search chapter or topic…"
           className="sm:ml-auto w-full sm:w-52 px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
       </div>
-      {/* Where each topic stands: allotted a class, attended one, or done. */}
+
+      <Card className="overflow-hidden">
+        {paper && (
+          <p className="px-4 py-2 text-xs text-indigo-700 bg-indigo-50 border-b border-indigo-100">
+            Showing <b>{paper.name}</b> only ·{' '}
+            <button type="button" onClick={() => setPaperId('')} className="font-semibold underline">Show all papers</button>
+          </p>
+        )}
+        <SummaryRow title="Syllabus" items={[
+          { label: 'Topics done',   value: `${totals.completedItems}/${totals.totalItems}`, tone: 'emerald' },
+          { label: 'Chapters done', value: `${totals.completedChapters}/${totals.totalChapters}`, tone: 'emerald' },
+          paper
+            ? { label: 'Paper', value: PAPER_STATUS[paper.status]?.label || '—', tone: PAPER_STATUS[paper.status]?.tone }
+            : { label: 'Papers done', value: `${syllabus.completedSubjects}/${syllabus.totalSubjects}`, tone: 'emerald' },
+          { label: 'Topics left',   value: totals.totalItems - totals.completedItems, tone: 'amber' },
+        ]} />
+        {cls && (
+          <SummaryRow title="Classes" items={[
+            { label: 'Booked',      value: cls.booked },
+            { label: 'Held so far', value: cls.held },
+            { label: 'Attended',    value: cls.attended, tone: 'emerald' },
+            { label: 'Missed',      value: cls.missed, tone: cls.missed ? 'rose' : 'gray' },
+            ...(cls.live ? [{ label: 'Live now', value: cls.live, tone: 'rose' }] : []),
+            { label: 'Upcoming',    value: cls.upcoming, tone: 'indigo' },
+          ]} />
+        )}
+        {cls?.nextClassAt && (
+          <p className="px-4 py-2 text-[11px] text-indigo-600 border-t border-gray-100">
+            Next class {fmtDay(cls.nextClassAt)}, {fmtTime(cls.nextClassAt)}
+          </p>
+        )}
+      </Card>
+
+      {/* Where each topic stands — counts are topics, same as the cards below. */}
       <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
-        {STATUS_FILTERS.map(f => (
-          <Chip key={f.key} active={rowFilter === f.key} onClick={() => setRowFilter(f.key)}>
-            {f.label} {statusCount(f.key)}
+        <Chip active={rowFilter === 'all'} onClick={() => setRowFilter('all')}>All topics {totals.totalItems}</Chip>
+        {TOPIC_STATES.map(s => (
+          <Chip key={s.key} active={rowFilter === s.key} onClick={() => setRowFilter(s.key)}>
+            {s.label} {stateCounts[s.key]}
           </Chip>
         ))}
       </div>
@@ -334,13 +354,19 @@ function SubjectsTab({ syllabus }) {
       ) : (
         <div className="space-y-2">
           {visible.map(s => (
-            <SubjectCard key={s.subjectId} subject={s} query={query} rowFilter={rowFilter} defaultOpen={visible.length <= 2} />
+            <SubjectCard key={s.subjectId} subject={s} query={query} rowFilter={rowFilter} defaultOpen={visible.length <= 2}
+              forceOpen={!!paper} threshold={thresholdPercent} />
           ))}
         </div>
       )}
     </div>
   )
 }
+
+// A class can cover several chapters; the log row lists every one of them.
+const logTopics = (r) => (r.items?.length ? r.items : [r])
+  .map(i => [i.chapter?.name, i.unit?.name].filter(Boolean).join(' · '))
+  .filter(Boolean).join(', ')
 
 // ───────────────────────────── attendance tab ─────────────────────────────
 
@@ -406,7 +432,7 @@ function AttendanceTab() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold text-gray-900 break-words">{r.subject?.name || r.title}</p>
                       <p className="text-xs text-gray-500 break-words mt-0.5">
-                        {[r.chapter?.name, r.unit?.name].filter(Boolean).join(' · ') || r.title}
+                        {logTopics(r) || r.title}
                       </p>
                       <p className="text-[11px] text-gray-400 mt-1.5">
                         {fmtDay(r.classDate)} · {fmtTime(r.classDate)}
@@ -683,7 +709,7 @@ export default function ProgressPage() {
     )
   }
 
-  const { syllabus, attendance, tests, lectures, forecast, thresholdPercent } = report
+  const { syllabus, classes, attendance, tests, lectures, forecast, thresholdPercent } = report
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto">
@@ -692,7 +718,7 @@ export default function ProgressPage() {
         <p className="text-gray-400 text-sm mt-1">
           {enrolled && <span className="text-indigo-500 font-medium">{enrolled} · </span>}
           {papers.length > 0 && <span className="text-gray-500">{papers.join(', ')} · </span>}
-          A chapter is completed once your mentor has taught it and you attended
+          A topic is done once your mentor has finished teaching it and you attended
           {thresholdPercent != null ? ` at least ${thresholdPercent}%` : ' enough'} of its classes.
         </p>
       </div>
@@ -727,7 +753,7 @@ export default function ProgressPage() {
         ))}
       </div>
 
-      {tab === 'subjects'   && <SubjectsTab syllabus={syllabus} />}
+      {tab === 'subjects'   && <SubjectsTab syllabus={syllabus} classes={classes} thresholdPercent={thresholdPercent} />}
       {tab === 'attendance' && <AttendanceTab />}
       {tab === 'tests'      && <TestsTab bySubject={tests.bySubject} />}
       {tab === 'lectures'   && <LecturesTab />}

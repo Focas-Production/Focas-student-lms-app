@@ -8,6 +8,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { apiFetch } from '../../api'
 import { enrollmentLabel } from '../../lib/ca'
+import { TOPIC_STATES, STATE_META, topicState, countStates, describeTopic } from '../../lib/topicState'
 
 const fmtDay = (d) => (d ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
 const fmtTime = (d) => (d ? new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : '—')
@@ -83,70 +84,40 @@ function Chip({ active, onClick, children }) {
 
 // ───────────────────────────── student detail ─────────────────────────────
 
-// Every chapter/topic row sits on one ladder the server computes from live-class
-// attendance: not-allotted → allotted → attended → completed. The tabs slice
-// rows by rung; "pending" is everything short of completed.
-const STATUS_META = {
-  'not-allotted': { label: 'Not allotted', tone: 'gray' },
-  allotted:       { label: 'Allotted',     tone: 'indigo' },
-  attended:       { label: 'Attended',     tone: 'amber' },
-  completed:      { label: '✓ Done',       tone: 'emerald' },
-}
-
-// One badge per rung. Under "allotted", pendingKind says whether the class is
-// running now or went by without the student. Works for a row (pendingKind)
-// and a rolled-up chapter (liveNow / missedSessions / nextClassAt).
-function statusBadge(x) {
-  if (x.status === 'allotted') {
-    const live = x.pendingKind === 'live' || x.liveNow
-    const missed = x.pendingKind === 'missed' || (x.pendingKind == null && x.missedSessions > 0 && !x.nextClassAt)
-    if (live) return { label: 'Live now', tone: 'rose' }
-    if (missed) return { label: 'Missed', tone: 'rose' }
-  }
-  return STATUS_META[x.status] || STATUS_META['not-allotted']
-}
-
+// One plain state per topic (lib/topicState) — the badge, the line under the
+// topic and the tabs all use it, so the numbers always agree. "Not done" is
+// every topic short of Done.
 function rowMatches(row, filter) {
   if (filter === 'all') return true
-  if (filter === 'done') return row.completed
   if (filter === 'pending') return !row.completed
-  return row.status === filter
+  return topicState(row) === filter
 }
 
-function rowDetail(row) {
-  const parts = []
-  if (row.sessions) parts.push(`${row.sessions} session${row.sessions !== 1 ? 's' : ''} · attended ${row.percent}%`)
-  if (row.pendingKind === 'live') parts.push(row.joinedLive ? 'in the live class now' : 'class live now, not joined')
-  else if (row.pendingKind === 'upcoming') parts.push(`next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`)
-  else if (row.pendingKind === 'missed') parts.push(`missed ${row.missedSessions} class${row.missedSessions !== 1 ? 'es' : ''}`)
-  else if (row.pendingKind === 'not-allotted') parts.push('no class scheduled yet')
-  else if (row.nextClassAt) parts.push(`next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`)
-  return parts.join(' · ')
-}
-
-function TopicRow({ row }) {
-  const badge = statusBadge(row)
+function TopicRow({ row, threshold }) {
+  const state = STATE_META[topicState(row)]
+  const live = row.pendingKind === 'live' && !row.completed
+  const line = describeTopic(row, { threshold })
   return (
     <div className="flex items-start gap-3 px-3 py-2 bg-gray-50 rounded-lg">
       <div className="flex-1 min-w-0">
         <p className="text-sm text-gray-900 break-words">{row.unitName || row.chapterName}</p>
-        <p className="text-[11px] text-gray-400 mt-0.5">
-          {rowDetail(row)}
-          {!row.completed && row.reason === 'teaching' && <span className="text-amber-600"> · still teaching</span>}
-          {!row.completed && row.reason === 'attendance' && <span className="text-rose-500"> · attendance short</span>}
+        <p className="text-[11px] text-gray-500 mt-0.5">
+          {line.text}
+          {line.why && <span className={TEXT[line.tone] || 'text-gray-400'}> — {line.why}</span>}
         </p>
       </div>
-      <Badge tone={badge.tone}
+      <Badge tone={live ? 'rose' : state.tone}
         title={row.source === 'manual' ? `Marked by ${row.markedByName || 'a mentor'}`
           : row.source === 'chapter' ? 'Completed with the whole chapter'
-          : 'Auto-computed from attendance'}>
-        {badge.label}{row.source === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
+          : state.help}>
+        {live ? 'Live now' : state.label}{row.source === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
       </Badge>
     </div>
   )
 }
 
-function SubjectBlock({ subject, filter }) {
+
+function SubjectBlock({ subject, filter, threshold }) {
   const [open, setOpen] = useState(true)
 
   const chapters = subject.chapters
@@ -169,7 +140,7 @@ function SubjectBlock({ subject, filter }) {
             <Bar percent={subject.percent} tone={tone} className="flex-1 max-w-[180px]" />
             <span className={`text-[11px] font-semibold flex-shrink-0 ${TEXT[tone]}`}>{subject.percent}%</span>
             <span className="text-[11px] text-gray-400 flex-shrink-0">
-              {subject.completedChapters}/{subject.totalChapters} chapters
+              {subject.completedItems} of {subject.totalItems} topics done
             </span>
           </div>
         </div>
@@ -182,18 +153,17 @@ function SubjectBlock({ subject, filter }) {
           )}
           {chapters.map(ch => {
             const single = ch.rows.length === 1 && !ch.rows[0].unitName
-            const chBadge = statusBadge(ch)
             return (
               <div key={ch.chapterId}>
                 {!single && (
                   <div className="flex items-center gap-2 mb-1.5 px-1">
                     <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide flex-1 min-w-0 truncate">{ch.name}</p>
-                    <Badge tone={chBadge.tone}>{chBadge.label}</Badge>
-                    <span className="text-[10px] text-gray-400 flex-shrink-0">{ch.done}/{ch.total}</span>
+                    {ch.completed && <Badge tone="emerald">Chapter done</Badge>}
+                    <span className="text-[10px] text-gray-400 flex-shrink-0">{ch.completed ? ch.total : ch.done} of {ch.total} done</span>
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  {ch.rows.map(r => <TopicRow key={`${r.chapterId}:${r.unitId || ''}`} row={r} />)}
+                  {ch.rows.map(r => <TopicRow key={`${r.chapterId}:${r.unitId || ''}`} row={r} threshold={threshold} />)}
                 </div>
               </div>
             )
@@ -203,6 +173,11 @@ function SubjectBlock({ subject, filter }) {
     </div>
   )
 }
+
+// A class can cover several chapters; the log row lists every one of them.
+const logTopics = (r) => (r.items?.length ? r.items : [r])
+  .map(i => [i.chapter?.name, i.unit?.name].filter(Boolean).join(' · '))
+  .filter(Boolean).join(', ')
 
 const ATT_BADGE = { present: ['emerald', 'Present'], late: ['amber', 'Late'], absent: ['rose', 'Absent'] }
 
@@ -222,7 +197,7 @@ function AttendanceList({ studentId }) {
           <div key={r._id} className="flex items-start gap-3 px-3 py-2 bg-gray-50 rounded-lg">
             <div className="flex-1 min-w-0">
               <p className="text-sm text-gray-900 break-words">
-                {[r.chapter?.name, r.unit?.name].filter(Boolean).join(' · ') || r.title}
+                {logTopics(r) || r.title}
               </p>
               <p className="text-[11px] text-gray-400 mt-0.5">
                 {fmtDay(r.classDate)} · {fmtTime(r.classDate)} · {fmtMs(r.attendedMs)} of {fmtMs(r.classDurationMs)} ({r.percent}%)
@@ -247,23 +222,20 @@ function AttendanceList({ studentId }) {
   )
 }
 
-// "Not done" is every topic short of completed; the three rung tabs split it by
-// how far along it is, so "allotted but never attended" is one tap.
 const DETAIL_TABS = [
-  { key: 'pending',      label: 'Not done' },
-  { key: 'not-allotted', label: 'Not allotted' },
-  { key: 'allotted',     label: 'Allotted' },
-  { key: 'attended',     label: 'Attended' },
-  { key: 'done',         label: 'Completed' },
-  { key: 'all',          label: 'All chapters' },
-  { key: 'classes',      label: 'Class attendance' },
+  { key: 'pending', label: 'Not done' },
+  ...TOPIC_STATES.filter(t => t.key !== 'done'),
+  { key: 'done',    label: 'Done' },
+  { key: 'all',     label: 'All topics' },
+  { key: 'classes', label: 'Class attendance' },
 ]
 const EMPTY_HINT = {
-  pending:        ['Nothing pending', 'Every chapter in your papers is completed for this student.'],
-  'not-allotted': ['Everything is allotted', 'Every chapter in your papers has a class assigned to this student.'],
-  allotted:       ['Nothing waiting', 'No allotted chapter is still unattended for this student.'],
-  attended:       ['Nothing in between', 'No attended chapter is still open for this student.'],
-  done:           ['Nothing completed yet', 'No chapter of yours is completed for this student yet.'],
+  pending:    ['Nothing pending', 'Every topic in your papers is done for this student.'],
+  missed:     ['Nothing missed', 'This student has not missed any class still open.'],
+  attending:  ['Nothing in between', 'No attended topic is still open for this student.'],
+  upcoming:   ['No class booked', 'No upcoming class is waiting for this student.'],
+  'no-class': ['Every topic has a class', 'Every topic in your papers has a class given or booked for this student.'],
+  done:       ['Nothing done yet', 'No topic of yours is done for this student yet.'],
 }
 
 function StudentPanel({ student, onClose }) {
@@ -277,13 +249,14 @@ function StudentPanel({ student, onClose }) {
   const shown = useMemo(() => (s?.subjects || []).reduce((n, subj) =>
     n + subj.chapters.reduce((m, ch) => m + ch.rows.filter(r => rowMatches(r, filter)).length, 0), 0),
     [s, filter])
+  const stateCounts = useMemo(
+    () => countStates((s?.subjects || []).flatMap(subj => subj.chapters.flatMap(ch => ch.rows))), [s])
   const tabCount = (key) => {
     if (!s) return null
     if (key === 'pending') return s.totalItems - s.completedItems
-    if (key === 'done') return s.completedItems
     if (key === 'all') return s.totalItems
     if (key === 'classes') return null
-    return s.itemStatusCounts?.[key] ?? 0
+    return stateCounts[key] ?? 0
   }
 
   return (
@@ -331,8 +304,8 @@ function StudentPanel({ student, onClose }) {
               </div>
 
               <p className="text-[11px] text-gray-400 mb-3 leading-relaxed">
-                Scoped to the papers you teach. A chapter completes once it is marked taught in Syllabus
-                {report.thresholdPercent != null ? ` and the student attended ≥${report.thresholdPercent}% of its sessions` : ''}.
+                Only the papers you teach. A topic is done once you mark it taught in Syllabus and the student
+                attended {report.thresholdPercent != null ? `at least ${report.thresholdPercent}%` : 'enough'} of its class time.
                 {' '}{a.sessions} session{a.sessions !== 1 ? 's' : ''} of yours · {fmtMs(a.attendedMs)} attended.
               </p>
 
@@ -356,7 +329,7 @@ function StudentPanel({ student, onClose }) {
                   hint={(EMPTY_HINT[filter] || [])[1]} />
               ) : (
                 <div className="space-y-2">
-                  {s.subjects.map(subj => <SubjectBlock key={subj.subjectId} subject={subj} filter={filter} />)}
+                  {s.subjects.map(subj => <SubjectBlock key={subj.subjectId} subject={subj} filter={filter} threshold={report.thresholdPercent} />)}
                 </div>
               )}
             </>
