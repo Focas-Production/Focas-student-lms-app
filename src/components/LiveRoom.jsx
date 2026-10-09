@@ -194,6 +194,23 @@ const LIVE_LAYOUT_CSS = `
    flex instead: the row takes the height it needs, the stage gives it up. */
 .focas-live .lk-grid-layout-wrapper,
 .focas-live .lk-focus-layout-wrapper { height: auto; flex: 1 1 0; min-height: 0; }
+/* Chat beside the stage. LiveKit lets the stage keep its content width (a
+   full student grid plus the one-line bottom bar), so in a big class the open
+   chat was crushed to ~140px and pushed half off the right edge. The stage
+   gives up the width instead (the bar then steps down, see fitBar), and the
+   chat keeps a fixed, readable width with its message list scrolling between
+   the header and the input. */
+.focas-live .lk-video-conference-inner { flex: 1 1 0; min-width: 0; }
+.focas-live .lk-chat {
+  flex: none; width: min(360px, 40vw); min-width: 0; min-height: 0; overflow: hidden;
+  grid-template-rows: var(--lk-chat-header-height) minmax(0, 1fr) var(--lk-control-bar-height);
+}
+.focas-live .lk-chat-messages { min-height: 0; max-height: 100%; }
+/* Phones: LiveKit floats the chat over the stage, full width — keep that, and
+   stop it above our bar, which is taller than LiveKit's own. */
+@media (max-width: 600px) {
+  .focas-live .lk-chat { width: 100%; bottom: var(--focas-bar-h, var(--lk-control-bar-height)); z-index: 25; }
+}
 /* Wide screens: the ⋯ button and the phone-only device pickers don't exist,
    and the sheet's contents sit inline in the row. The running timer stays at
    the end of the row, where it always was. */
