@@ -250,9 +250,12 @@ export default function LiveClassesPage() {
                     {fmtWhen(c.scheduledStart)} · {c.title}
                   </p>
                   {c.chapterName && (
-                    <p className="text-xs text-indigo-500 truncate mt-0.5">
-                      📖 {c.subjectName ? `${c.subjectName} · ` : ''}{c.chapterName}{c.unitName ? ` · ${c.unitName}` : ''}
+                    <p className="text-xs text-indigo-500 break-words mt-0.5">
+                      📖 {c.subjectName ? `${c.subjectName} · ` : ''}{c.chapterName}
                     </p>
+                  )}
+                  {c.chapterName && c.unitName && (
+                    <p className="text-xs text-indigo-500 break-words mt-0.5">↳ {c.unitName}</p>
                   )}
                   {c.description && <p className="text-xs text-gray-500 line-clamp-1 mt-0.5">{c.description}</p>}
                 </div>

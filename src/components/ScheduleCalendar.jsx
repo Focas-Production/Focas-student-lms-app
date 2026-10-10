@@ -223,9 +223,10 @@ function ClassDetailModal({ cls, now, actions, onClose }) {
           {cls.hostName && <p className="text-sm text-gray-700">🧑‍🏫 {cls.hostName}</p>}
           {cls.chapterName && (
             <p className="text-sm text-indigo-600">
-              📖 {cls.subjectName ? `${cls.subjectName} · ` : ''}{cls.chapterName}{cls.unitName ? ` · ${cls.unitName}` : ''}
+              📖 {cls.subjectName ? `${cls.subjectName} · ` : ''}{cls.chapterName}
             </p>
           )}
+          {cls.chapterName && cls.unitName && <p className="text-sm text-indigo-600">↳ {cls.unitName}</p>}
           {cls.description && <p className="text-sm text-gray-500 whitespace-pre-line">{cls.description}</p>}
           {/* A room slot: the tracks running in it, each with its own status */}
           {cls.isGroup && (

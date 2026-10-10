@@ -282,12 +282,15 @@ function ClassMeta({ c }) {
   return (
     <>
       {c.chapter?.name && (
-        <p className="text-xs text-indigo-500 truncate mt-0.5">
-          📖 {c.subject?.name ? `${c.subject.name} · ` : ''}{c.chapter.name}{c.unit?.name ? ` · ${c.unit.name}` : ''}
+        <p className="text-xs text-indigo-500 break-words mt-0.5">
+          📖 {c.subject?.name ? `${c.subject.name} · ` : ''}{c.chapter.name}
         </p>
       )}
+      {c.chapter?.name && c.unit?.name && (
+        <p className="text-xs text-indigo-500 break-words mt-0.5">↳ {c.unit.name}</p>
+      )}
       {c.extraItems?.length > 0 && (
-        <p className="text-xs text-teal-600 truncate mt-0.5"
+        <p className="text-xs text-teal-600 break-words mt-0.5"
           title={c.extraItems.map((x) => x.unit?.name ? `${x.chapter?.name} · ${x.unit.name}` : x.chapter?.name).join(', ')}>
           ✓ also finished: {c.extraItems.map((x) => x.unit?.name || x.chapter?.name).filter(Boolean).join(', ')}
         </p>
