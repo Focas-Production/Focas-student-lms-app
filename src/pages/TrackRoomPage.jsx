@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { useParams } from 'react-router-dom'
 import { apiFetch } from '../api'
 import { useAuth } from '../auth/AuthContext'
+import ClassFeedbackDialog from '../components/ClassFeedbackDialog'
+import { feedbackPromptFor } from '../lib/classFeedback'
 
 const LiveRoom = lazy(() => import('../components/LiveRoom'))
 
@@ -24,6 +26,7 @@ export default function TrackRoomPage() {
   const [error, setError]     = useState('')
   const [notFound, setNotFound] = useState(false)
   const [handRaised, setHandRaised] = useState(false)
+  const [feedbackFor, setFeedbackFor] = useState(null)   // "How was your class?" — students only
 
   const sessionRef = useRef(null)
   useEffect(() => { sessionRef.current = session }, [session])
@@ -84,10 +87,17 @@ export default function TrackRoomPage() {
   // the host removed this student — say so rather than silently dropping them.
   const leaveFrom = (token, info) => {
     if (sessionRef.current?.token !== token) return
+    const classId = sessionRef.current.classId
     setSession(null)
     setHandRaised(false)
     setError(info?.removed ? (info.reason || 'The host removed you from this class.') : '')
     loadStatus()
+    // The class is over: ask the student how it was (nothing if it's still running).
+    if (!isHost && !info?.removed) {
+      feedbackPromptFor(classId).then((cls) => {
+        if (cls && !sessionRef.current) setFeedbackFor(cls)
+      })
+    }
   }
 
   // 🖐 toggle (students only) — the server notifies the host, even when they're
@@ -130,6 +140,10 @@ export default function TrackRoomPage() {
     )
   }
 
+  const feedback = feedbackFor && (
+    <ClassFeedbackDialog key={feedbackFor._id} cls={feedbackFor} onClose={() => setFeedbackFor(null)} />
+  )
+
   if (notFound) {
     return <Centered title="Track not found"
       body={`There's no "${roomKey} / ${trackKey}" in this system. Check the link.`} />
@@ -144,6 +158,7 @@ export default function TrackRoomPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+      {feedback}
       <div className="bg-white rounded-2xl shadow-sm p-8 max-w-md w-full text-center">
         <p className="text-[11px] font-bold uppercase tracking-wide text-indigo-600 mb-2">{label}</p>
 

@@ -1,5 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { apiFetch } from '../api'
+import ClassFeedbackDialog from './ClassFeedbackDialog'
+import { feedbackPromptFor } from '../lib/classFeedback'
 
 // Lazy-loaded so the ~1.4 MB LiveKit bundle is only fetched when a student
 // actually joins a class, not on every page visit.
@@ -25,6 +27,12 @@ export default function StudentLiveSessionProvider({ children }) {
   const [joining, setJoining]       = useState(null)  // class id being joined
   const [handRaised, setHandRaised] = useState(false)
   const [notice, setNotice]         = useState('')    // why the last session ended, when it wasn't the student's choice
+  // "How was your class?" — open for this class ({ _id, title, … }), or null.
+  // Lives here, beside the room, so it pops up on whatever page the student is
+  // on when the class ends. feedbackVersion ticks each time it closes, so the
+  // Live Classes page knows to refresh its "rate your classes" strip.
+  const [feedbackFor, setFeedbackFor] = useState(null)
+  const [feedbackVersion, setFeedbackVersion] = useState(0)
 
   // A late "disconnected" event from a torn-down room must not evict us from
   // the one we just joined — see leaveFrom().
@@ -74,6 +82,11 @@ export default function StudentLiveSessionProvider({ children }) {
 
   const toggleMinimize = useCallback(() => setMinimized((m) => !m), [])
   const clearNotice = useCallback(() => setNotice(''), [])
+  const openFeedback = useCallback((cls) => setFeedbackFor(cls), [])
+  const closeFeedback = useCallback(() => {
+    setFeedbackFor(null)
+    setFeedbackVersion((v) => v + 1)
+  }, [])
 
   // Only act on a disconnect from the room we're actually in. Joining another
   // class remounts LiveKitRoom (it's keyed on the token), and the old room's
@@ -82,16 +95,26 @@ export default function StudentLiveSessionProvider({ children }) {
   // student — say so on the page, don't just vanish.
   const leaveFrom = (token, info) => {
     if (sessionRef.current?.token !== token) return
+    const classId = sessionRef.current.classId
     setSession(null)
     setMinimized(false)
     setHandRaised(false)
     // info.reason is set when the server said WHY just before the disconnect
     // (the camera rule); otherwise it was the host's Remove button.
     setNotice(info?.removed ? (info.reason || 'The host removed you from this class.') : '')
+    // Out of the room and the class is over (the host ended it, or they left
+    // after it ended): ask how it was. Leaving a class that's still running asks
+    // nothing — it waits in the Live Classes page's strip until the class ends.
+    if (!info?.removed) {
+      feedbackPromptFor(classId).then((cls) => {
+        // Skipped if they've already joined another class in the meantime.
+        if (cls && !sessionRef.current) setFeedbackFor((cur) => cur || cls)
+      })
+    }
   }
 
   return (
-    <StudentLiveSessionContext.Provider value={{ session, minimized, toggleMinimize, join, joining, notice, clearNotice }}>
+    <StudentLiveSessionContext.Provider value={{ session, minimized, toggleMinimize, join, joining, notice, clearNotice, openFeedback, feedbackOpen: !!feedbackFor, feedbackVersion }}>
       {children}
 
       {/* The room element keeps this exact slot whether full-screen or
@@ -114,6 +137,11 @@ export default function StudentLiveSessionProvider({ children }) {
             onLeave={(info) => leaveFrom(session.token, info)}
           />
         </Suspense>
+      )}
+
+      {/* Not while they're back in a room — it waits until they're out. */}
+      {feedbackFor && !session && (
+        <ClassFeedbackDialog key={feedbackFor._id} cls={feedbackFor} onClose={closeFeedback} />
       )}
     </StudentLiveSessionContext.Provider>
   )

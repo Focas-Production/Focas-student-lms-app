@@ -3,9 +3,15 @@ import { useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
 import { useStudentLiveSession } from '../../components/StudentLiveSessionProvider'
+import { wasAsked } from '../../lib/classFeedback'
 
 // Only loaded when work is actually submitted — it carries the recorder.
 const SubmitWorkPanel = lazy(() => import('../../components/SubmitWorkPanel'))
+
+// A class that ended within this long opens the rating dialog by itself when
+// the student lands here (once per class per device); older ones just wait in
+// the "Rate your recent classes" strip until the server's window closes.
+const AUTO_ASK_MS = 24 * 60 * 60 * 1000
 
 // Height of the minimized class window (LiveRoom's corner window: 200px tall,
 // 16px off the bottom edge). The submit dialog keeps this much clear so the
@@ -90,7 +96,10 @@ export default function LiveClassesPage() {
   const [tab, setTab] = useState(() => searchParams.get('view') === 'calendar' ? 'calendar' : 'list')
   // The room itself is owned by the layout-level provider, so it survives
   // navigating away while minimized (see StudentLiveSessionProvider).
-  const { session, minimized, join: enterClass, joining, notice, clearNotice } = useStudentLiveSession()
+  const { session, minimized, join: enterClass, joining, notice, clearNotice,
+    openFeedback, feedbackOpen, feedbackVersion } = useStudentLiveSession()
+  // Ended classes this student joined and hasn't rated or skipped yet.
+  const [toRate, setToRate] = useState([])
 
   const [asking, setAsking] = useState(null)      // class id whose request is in flight
   const [letIn, setLetIn] = useState('')          // "the mentor let you back in" banner
@@ -164,6 +173,26 @@ export default function LiveClassesPage() {
     return () => clearInterval(t)
   }, [load, pageVisible, waitingForMentor])
 
+  // Classes waiting for a rating: on load, whenever the dialog closes, and when
+  // a class in the list ends (a student who left early gets asked then). Not
+  // polled — the class list's own poll is what notices a class ending.
+  const endedKey = (classes || []).filter((c) => c.status === 'ended').map((c) => c._id).join(',')
+  useEffect(() => {
+    if (!pageVisible) return undefined
+    let alive = true
+    apiFetch('/api/live-classes/feedback/pending')
+      .then((d) => alive && setToRate(d.classes || []))
+      .catch(() => {})
+    return () => { alive = false }
+  }, [pageVisible, feedbackVersion, endedKey])
+
+  // Ask once, by itself, about a class that ended in the last day.
+  useEffect(() => {
+    if (session || feedbackOpen) return
+    const fresh = toRate.find((c) => c.endedAt && Date.now() - new Date(c.endedAt).getTime() < AUTO_ASK_MS && !wasAsked(c._id))
+    if (fresh) openFeedback(fresh)
+  }, [toRate, session, feedbackOpen, openFeedback])
+
   const join = async (cls) => {
     setError('')
     try {
@@ -204,6 +233,31 @@ export default function LiveClassesPage() {
           <span>{notice}</span>
           <button onClick={clearNotice} className="text-gray-400 hover:text-gray-600 text-lg leading-none" title="Dismiss">×</button>
         </p>
+      )}
+
+      {/* Ended classes still waiting for a rating. */}
+      {toRate.length > 0 && (
+        <div className="mb-4 bg-amber-50 border border-amber-200 rounded-2xl p-3 sm:p-4">
+          <p className="text-sm font-bold text-amber-800">⭐ Rate your recent classes</p>
+          <p className="text-xs text-amber-700/80 mb-2">Takes a few seconds — it helps us improve every class.</p>
+          <div className="space-y-2">
+            {toRate.slice(0, 5).map((c) => (
+              <div key={c._id} className="flex items-center gap-3 bg-white rounded-xl px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-gray-900 truncate">{c.title}</p>
+                  <p className="text-[11px] text-gray-500 truncate">
+                    {fmtWhen(c.scheduledStart)}{c.hostName ? ` · with ${c.hostName}` : ''}
+                  </p>
+                </div>
+                <button onClick={() => openFeedback(c)} disabled={!!session}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-semibold hover:bg-amber-600 whitespace-nowrap disabled:opacity-50">
+                  Rate
+                </button>
+              </div>
+            ))}
+            {toRate.length > 5 && <p className="text-[11px] text-amber-700/80">+{toRate.length - 5} more</p>}
+          </div>
+        </div>
       )}
 
       {tab === 'calendar' ? (
