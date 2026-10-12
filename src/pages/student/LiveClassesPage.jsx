@@ -100,6 +100,7 @@ export default function LiveClassesPage() {
     openFeedback, feedbackOpen, feedbackVersion } = useStudentLiveSession()
   // Ended classes this student joined and hasn't rated or skipped yet.
   const [toRate, setToRate] = useState([])
+  const [showAllToRate, setShowAllToRate] = useState(false)
 
   const [asking, setAsking] = useState(null)      // class id whose request is in flight
   const [letIn, setLetIn] = useState('')          // "the mentor let you back in" banner
@@ -241,7 +242,7 @@ export default function LiveClassesPage() {
           <p className="text-sm font-bold text-amber-800">⭐ Rate your recent classes</p>
           <p className="text-xs text-amber-700/80 mb-2">Takes a few seconds — it helps us improve every class.</p>
           <div className="space-y-2">
-            {toRate.slice(0, 5).map((c) => (
+            {(showAllToRate ? toRate : toRate.slice(0, 5)).map((c) => (
               <div key={c._id} className="flex items-center gap-3 bg-white rounded-xl px-3 py-2">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-gray-900 truncate">{c.title}</p>
@@ -255,7 +256,12 @@ export default function LiveClassesPage() {
                 </button>
               </div>
             ))}
-            {toRate.length > 5 && <p className="text-[11px] text-amber-700/80">+{toRate.length - 5} more</p>}
+            {toRate.length > 5 && (
+              <button type="button" onClick={() => setShowAllToRate((v) => !v)}
+                className="text-xs font-semibold text-amber-700 hover:text-amber-900 hover:underline">
+                {showAllToRate ? 'Show less' : `Show ${toRate.length - 5} more`}
+              </button>
+            )}
           </div>
         </div>
       )}
