@@ -4,6 +4,7 @@ import { apiFetch } from '../../api'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
 import { useStudentLiveSession } from '../../components/StudentLiveSessionProvider'
 import { wasAsked } from '../../lib/classFeedback'
+import { isHallSession, sessionTypeLabel } from '../../utils/sessionTypes'
 
 // Only loaded when work is actually submitted — it carries the recorder.
 const SubmitWorkPanel = lazy(() => import('../../components/SubmitWorkPanel'))
@@ -303,6 +304,7 @@ export default function LiveClassesPage() {
                         {c.roomLabel} · {c.trackLabel}
                       </span>
                     )}
+                    {isHallSession(c) && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">{sessionTypeLabel(c)}</span>}
                     {c.hostName && <span className="text-[11px] text-gray-400">with {c.hostName}</span>}
                   </div>
                   {/* One bold line: when it runs, then which slot it is */}

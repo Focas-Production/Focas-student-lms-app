@@ -24,7 +24,29 @@ export async function apiFetch(path, options = {}) {
       localStorage.removeItem('student_user')
       window.dispatchEvent(new CustomEvent('device-logout'))
     }
-    throw new Error(data.error || `Request failed (${res.status})`)
+    // status/data ride along so callers can act on structured errors (e.g. PERSON_CLASH).
+    const err = new Error(data.error || `Request failed (${res.status})`)
+    err.status = res.status
+    err.data = data
+    throw err
   }
   return data
+}
+
+// Booking saves can come back with code PERSON_CLASH: someone (the host or a
+// listed student) is already booked elsewhere at that time. That is a warning,
+// not a refusal — show it and, if the scheduler still wants it, re-send with
+// allowClash. `send(extra)` must merge `extra` into its JSON body.
+export async function saveWithClashCheck(send) {
+  try {
+    return await send({})
+  } catch (err) {
+    if (err.data?.code !== 'PERSON_CLASH') throw err
+    if (!window.confirm(`${err.message}\n\nSave anyway?`)) {
+      const e = new Error('Not saved — change the time or the people, or save anyway.')
+      e.cancelled = true
+      throw e
+    }
+    return send({ allowClash: true })
+  }
 }

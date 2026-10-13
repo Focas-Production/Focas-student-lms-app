@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { apiFetch } from '../api'
 import { groupRoomSlots } from '../utils/roomSlots'
+import { isHallSession, sessionTypeLabel } from '../utils/sessionTypes'
 
 // Month / week / day calendar of live-class slots, shared by the student and the
 // mentor portals. Only the feed and the buttons differ, so both are props:
@@ -122,7 +123,7 @@ function statusLine(cls, now) {
   }
 }
 
-const metaLine = (c) => [c.roomLabel && `${c.roomLabel} · ${c.trackLabel}`, c.hostName, c.chapterName].filter(Boolean).join(' · ')
+const metaLine = (c) => [sessionTypeLabel(c), c.roomLabel && `${c.roomLabel} · ${c.trackLabel}`, c.hostName, c.chapterName].filter(Boolean).join(' · ')
 
 // Column layout for overlapping time-grid blocks: events that overlap in time are
 // grouped into a cluster and split its width evenly (two tracks running at once
@@ -207,6 +208,7 @@ function ClassDetailModal({ cls, now, actions, onClose }) {
                   {cls.roomLabel}{cls.trackLabel ? ` · ${cls.trackLabel}` : ''}
                 </span>
               )}
+              {isHallSession(cls) && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">{sessionTypeLabel(cls)}</span>}
             </div>
             <p id="class-detail-title" className="text-sm font-bold text-gray-900">{cls.title}</p>
           </div>

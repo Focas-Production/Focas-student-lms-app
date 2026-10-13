@@ -14,6 +14,7 @@
 // Works on both class shapes in the app: the raw list documents
 // ({ room: { key, label }, track: {…}, chapter: {…} }) and the flat calendar
 // feed ({ roomKey, roomLabel, trackKey, trackLabel, chapterName }).
+import { isHallSession } from './sessionTypes'
 
 export const roomKeyOf     = (c) => c.roomKey || c.room?.key || ''
 export const roomLabelOf   = (c) => c.roomLabel || c.room?.label || ''
@@ -86,8 +87,8 @@ function groupSlot(classes) {
 // Collapse `classes` into room slots. Within one room, classes whose times
 // overlap form a slot — but never two classes on the same track, so a chain of
 // back-to-back bookings (Track 1 6–9, Track 2 8–11, Track 1 9–12) still splits
-// where a track repeats. Cancelled classes and classes without a room stay on
-// their own. The result keeps the caller's order (the list is attention-first
+// where a track repeats. Cancelled classes, classes without a room and FOCAS
+// Hall sessions stay on their own. The result keeps the caller's order (the list is attention-first
 // from the server, and must stay that way); the calendar re-sorts by time.
 export function groupRoomSlots(classes, group = true) {
   if (!group) return classes.map(singleSlot)
@@ -97,7 +98,8 @@ export function groupRoomSlots(classes, group = true) {
   const slots = []
   for (const c of classes) {
     const rk = roomKeyOf(c)
-    if (!rk || c.status === 'cancelled') { slots.push(singleSlot(c)); continue }
+    // FOCAS Hall tracks are separate sessions (often different hosts) — never one slot.
+    if (!rk || c.status === 'cancelled' || isHallSession(c)) { slots.push(singleSlot(c)); continue }
     if (!byRoom.has(rk)) byRoom.set(rk, [])
     byRoom.get(rk).push(c)
   }

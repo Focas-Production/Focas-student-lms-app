@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { apiFetch } from '../../api'
+import { apiFetch, saveWithClashCheck } from '../../api'
 import { groupRoomSlots, slotPrimaryClass, trackLabelOf } from '../../utils/roomSlots'
 import AttendanceModal from '../../components/AttendanceModal'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
 import DateField from '../../components/DateField'
+import { isHallSession, sessionTypeLabel } from '../../utils/sessionTypes'
 import { useLiveSession } from '../../components/LiveSessionProvider'
 
 function fmtWhen(d) {
@@ -281,6 +282,12 @@ const StatusPill = ({ status }) => (
 function ClassMeta({ c }) {
   return (
     <>
+      {isHallSession(c) && (
+        <p className="mt-0.5">
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">{sessionTypeLabel(c)}</span>
+          {c.recordingWanted && <span className="ml-1.5 text-[10px] text-gray-400" title="This session will be recorded">⏺ rec</span>}
+        </p>
+      )}
       {c.chapter?.name && (
         <p className="text-xs text-indigo-500 break-words mt-0.5">
           📖 {c.subject?.name ? `${c.subject.name} · ` : ''}{c.chapter.name}
@@ -402,6 +409,7 @@ const emptyCurr = () => ({
 function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
   const [hosts, setHosts] = useState([])
   const [rooms, setRooms] = useState(null)   // raw topology — track labels + the "both tracks" option
+  const [sessionTypes, setSessionTypes] = useState([])  // FOCAS Hall session types, from topology
   const [allStudents, setAllStudents] = useState(null)  // light roster for the allotment picker
   const [stuQ, setStuQ]     = useState({ first: '', second: '' })  // picker search text per track
   const [saving, setSaving] = useState(false)
@@ -416,6 +424,8 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
     date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
     start: `${pad(Math.min(now.getHours() + 1, 22))}:00`, end: `${pad(Math.min(now.getHours() + 3, 23))}:00`,
     description: '',
+    // FOCAS Hall only: what kind of session, and whether to record it.
+    sessionType: '', record: false,
   })
 
   useEffect(() => {
@@ -429,6 +439,7 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
       .then((d) => {
         const rs = d.rooms || []
         setRooms(rs)
+        setSessionTypes(d.sessionTypes || [])
         const r0 = rs[0]
         setForm((f) => (f.trackSel ? f : { ...f, trackSel: r0?.tracks?.[0] ? `${r0.key}|${r0.tracks[0].key}` : '' }))
       })
@@ -439,7 +450,8 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
     const opts = []
     for (const r of rooms || []) {
       for (const tr of r.tracks || []) opts.push({ key: `${r.key}|${tr.key}`, label: `${r.label} · ${tr.label}` })
-      if ((r.tracks || []).length > 1) opts.push({ key: `${r.key}|*`, label: `${r.label} · Both tracks — same time` })
+      // FOCAS Hall tracks are separate sessions — no "both tracks" booking.
+      if (r.kind !== 'hall' && (r.tracks || []).length > 1) opts.push({ key: `${r.key}|*`, label: `${r.label} · Both tracks — same time` })
     }
     return opts
   }, [rooms])
@@ -449,6 +461,8 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
   const selRoom = (rooms || []).find((r) => r.key === selRoomKey)
   const t1 = selRoom?.tracks?.[0]
   const t2 = selRoom?.tracks?.[1]
+  // FOCAS Hall: a session type instead of a chapter, recording optional.
+  const hallMode = selRoom?.kind === 'hall'
 
   // Subject/chapter/unit picks flow into that track's title until the mentor types one.
   const pickCurr = (which, patch) => {
@@ -487,6 +501,7 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
     const chapter = (subject?.chapters || []).find((c) => String(c._id) === cur.chapterId)
     return (
       <>
+        {!hallMode && (<>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className={label}>Subject</label>
@@ -515,9 +530,11 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
             </select>
           </div>
         )}
+        </>)}
         <div>
           <label className={label}>Title</label>
-          <input className={field} value={cur.title} placeholder="e.g. Accounting — chapter 2"
+          <input className={field} value={cur.title}
+            placeholder={hallMode ? 'e.g. Welcome to CA Inter — Jan 2027 batch' : 'e.g. Accounting — chapter 2'}
             onChange={(e) => setCurrTitle(which, e.target.value)} />
         </div>
         {(() => {
@@ -580,8 +597,9 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
     if (!form.trackSel) return setError('Pick a room and track')
     if (bothMode && (!t1 || !t2)) return setError('That room has no second track')
     const currs = bothMode ? [form.first, form.second] : [form.first]
+    if (hallMode && !form.sessionType) return setError('Pick a session type')
     for (const c of currs) {
-      if (!c.subjectId || !c.chapterId) return setError('Pick the subject and chapter for every track')
+      if (!hallMode && (!c.subjectId || !c.chapterId)) return setError('Pick the subject and chapter for every track')
       if (!c.title.trim()) return setError('Give every track a title')
     }
     // The date field can be cleared; without this the Invalid Dates below would
@@ -591,22 +609,25 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
     const scheduledEnd   = new Date(`${form.date}T${form.end}`)
     if (!(scheduledEnd > scheduledStart)) return setError('End time must be after the start time')
 
-    const book = (trackKey, curr) => apiFetch('/api/live-classes/manage', {
+    // A clash with someone booked elsewhere is a warning the mentor may accept.
+    const book = (trackKey, curr) => saveWithClashCheck((extra) => apiFetch('/api/live-classes/manage', {
       method: 'POST',
       body: JSON.stringify({
+        ...extra,
         title: curr.title.trim(),
         description: form.description.trim(),
         scheduledStart: scheduledStart.toISOString(),
         scheduledEnd: scheduledEnd.toISOString(),
         roomKey: selRoomKey, trackKey,
         hostUserId: form.hostUserId || undefined,
-        subjectId: curr.subjectId,
-        chapterId: curr.chapterId,
-        unitId: curr.unitId || undefined,
+        // A Hall session carries a type (and the record choice) instead of a chapter.
+        ...(hallMode
+          ? { sessionType: form.sessionType, record: form.record }
+          : { subjectId: curr.subjectId, chapterId: curr.chapterId, unitId: curr.unitId || undefined }),
         // Non-empty → only these students see and can join the class.
         studentIds: curr.students.map((s) => s.id),
       }),
-    })
+    }))
 
     setSaving(true)
     try {
@@ -650,7 +671,7 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
         className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
-          <p className="text-sm font-bold text-gray-900">Schedule a live class</p>
+          <p className="text-sm font-bold text-gray-900">{hallMode ? 'Schedule a FOCAS Hall session' : 'Schedule a live class'}</p>
           <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
         </div>
 
@@ -673,6 +694,27 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
               </select>
             </div>
           </div>
+
+          {hallMode && (
+            <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-3 space-y-3">
+              <div>
+                <label className={label}>Session type</label>
+                <select className={field} value={form.sessionType} required
+                  onChange={(e) => setForm((f) => ({ ...f, sessionType: e.target.value }))}>
+                  <option value="">Pick a type…</option>
+                  {sessionTypes.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+                </select>
+              </div>
+              <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+                <input type="checkbox" checked={form.record} className="w-4 h-4 mt-0.5 accent-violet-600"
+                  onChange={(e) => setForm((f) => ({ ...f, record: e.target.checked }))} />
+                <span>
+                  <span className="font-semibold">Record this session</span>
+                  <span className="block text-[11px] text-gray-400">Off by default — tick it only if the recording will be needed.</span>
+                </span>
+              </label>
+            </div>
+          )}
 
           {bothMode ? (
             <>
@@ -720,9 +762,9 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
 
           {error && <p className="text-sm text-red-500">{error}</p>}
           <p className="text-[11px] text-gray-400 leading-relaxed">
-            Attendance and chapter completion are tracked for this class just like an
-            admin-scheduled one — students who attend enough get the chapter/unit marked
-            automatically when you end it.
+            {hallMode
+              ? 'Attendance is tracked as usual. Hall sessions don\'t touch chapter progress, and students aren\'t asked for class feedback afterwards.'
+              : 'Attendance and chapter completion are tracked for this class just like an admin-scheduled one — students who attend enough get the chapter/unit marked automatically when you end it.'}
           </p>
         </div>
 
@@ -733,7 +775,7 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
           </button>
           <button type="submit" disabled={saving}
             className="px-4 py-2 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:bg-gray-300">
-            {saving ? 'Scheduling…' : bothMode ? 'Schedule both tracks' : 'Schedule class'}
+            {saving ? 'Scheduling…' : bothMode ? 'Schedule both tracks' : hallMode ? 'Schedule session' : 'Schedule class'}
           </button>
         </div>
       </form>
