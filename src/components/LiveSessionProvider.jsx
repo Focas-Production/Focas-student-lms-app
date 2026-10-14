@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../api'
+import { useConfirm, useToast } from './feedbackContext'
 
 // Lazy-loaded so the LiveKit bundle only loads when a class is actually hosted.
 const LiveRoom = lazy(() => import('./LiveRoom'))
@@ -18,6 +19,10 @@ export function useLiveSession() {
 }
 
 export default function LiveSessionProvider({ children }) {
+  // Styled confirm + toasts. Safe here: the track switcher and mirror buttons
+  // only exist in the main window, never in the PiP window.
+  const confirmAsk = useConfirm()
+  const appToast = useToast()   // `toast` below is the in-room chip
   const [session, setSession]     = useState(null)  // { classId, roomKey, trackKey, token, wsUrl, title, subtitle }
   const [minimized, setMinimized] = useState(false) // room shrunk to a corner window; the app usable behind it
   const [roomTracks, setRoomTracks] = useState([])  // switcher: tracks of the current room only
@@ -164,20 +169,25 @@ export default function LiveSessionProvider({ children }) {
       try {
         await apiFetch(`/api/live-classes/manage/track/${track.roomKey}/${track.trackKey}/mirror/stop`, { method: 'POST', body: JSON.stringify({}) })
         setMirrors(m => m.filter(k => k !== key))
+        appToast.info(`Stopped broadcasting into ${label}`)
       } catch (err) {
         setHostError(err.message || 'Could not stop the mirror')
       }
       return
     }
-    if (!window.confirm(
-      `Broadcast your camera and mic into ${label}?\n\nThis is one-way: students there will see and hear you live, but you will NOT see or hear them. You stay in your current track.`,
-    )) return
+    const ok = await confirmAsk({
+      title: `Broadcast into ${label}?`,
+      message: 'This is one-way: students there will see and hear you live, but you will NOT see or hear them. You stay in your current track.',
+      confirmLabel: 'Start broadcast', cancelLabel: 'Not now',
+    })
+    if (!ok) return
     try {
       await apiFetch(`/api/live-classes/manage/track/${track.roomKey}/${track.trackKey}/mirror`, {
         method: 'POST',
         body: JSON.stringify({ fromRoomKey: session?.roomKey, fromTrackKey: session?.trackKey }),
       })
       setMirrors(m => [...m, key])
+      appToast.success(`Broadcasting into ${label}`, 'Students there can see and hear you.')
       await loadRoomTracks(session?.roomKey)   // target may have just gone live
     } catch (err) {
       setHostError(err.message || 'Could not start the mirror')
@@ -212,7 +222,12 @@ export default function LiveSessionProvider({ children }) {
     const msg = track.state === 'scheduled'
       ? `Switch to ${label}? This will start "${track.title}". Your current class stays live and its students stay connected; you can switch back any time.`
       : `Switch to ${label}? Your current class stays live and its students stay connected; you can switch back any time.`
-    if (!window.confirm(msg)) return
+    const ok = await confirmAsk({
+      title: `Switch to ${label}?`,
+      message: msg.replace(/^Switch to [^?]*\? /, ''),
+      confirmLabel: 'Switch track', cancelLabel: 'Stay here',
+    })
+    if (!ok) return
     setSwitching(true); setHostError('')
     try {
       const d = await apiFetch(
@@ -223,8 +238,10 @@ export default function LiveSessionProvider({ children }) {
       setSession(s)
       setMirrors([])   // forwarding died with the old connection
       await loadRoomTracks(s.roomKey)
+      appToast.success(`Switched to ${label}`, 'Your previous track stays live.')
     } catch (err) {
       setHostError(err.message || 'Could not switch track')
+      appToast.error('Could not switch track', err.message || 'Please try again.')
     } finally {
       setSwitching(false)
     }

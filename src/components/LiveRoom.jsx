@@ -14,6 +14,7 @@ import { usePictureInPicture, pickStageVideo } from '../hooks/usePictureInPictur
 import BackgroundButton from './BackgroundButton'
 import { fmtCountdown } from '../utils/countdown'
 import { apiFetch } from '../api'
+import { useConfirm, useToast } from './feedbackContext'
 
 // The compact bar (one row, ⋯ sheet), used twice in LIVE_LAYOUT_CSS: by media
 // query on phones and touch tablets, and by data-fit on a narrow desktop window.
@@ -444,6 +445,9 @@ function LiveRoomInner({
   onHandEvent, toast, onRaiseHand, handRaised, submitClass, classId,
   minimized, onToggleMinimize, onOpenSubmissions, submissionsPending = 0,
 }) {
+  const confirmAsk = useConfirm()
+  const appToast = useToast()   // `toast` is the in-room chip prop
+  const leaveConfirmed = useRef(false)
   // Which class this room is showing — hosts already pass activeClassId and
   // students submitClass, so the timer works even where classId isn't wired.
   const timerClassId = classId || activeClassId || submitClass?.id || null
@@ -638,14 +642,27 @@ function LiveRoomInner({
   )
   // Hosts get an "are you sure" on LiveKit's Leave button — one mis-click drops
   // them out of the session (the class itself stays live until they press End).
-  // Caught in the capture phase so we can veto the click before LiveKit disconnects.
+  // Caught in the capture phase so we can veto the click before LiveKit
+  // disconnects; on "Leave" the same button is clicked again and let through.
+  // The styled dialog renders in this (main) document — the Leave button here
+  // never lives in the PiP window, which has its own inline confirm (PipStage).
   const guardLeave = (e) => {
     if (!canHost) return
     const leaveBtn = e.target.closest?.('.lk-disconnect-button')
-    if (leaveBtn && !window.confirm('Leave this class session? The class stays live until you press End, so you can come back any time. Students who stay connected will wait for you.')) {
-      e.preventDefault()
-      e.stopPropagation()
-    }
+    if (!leaveBtn) return
+    if (leaveConfirmed.current) { leaveConfirmed.current = false; return }
+    e.preventDefault()
+    e.stopPropagation()
+    confirmAsk({
+      title: 'Leave this class?',
+      message: 'The class stays live until you press End, so you can come back any time. Students who stay connected will wait for you.',
+      confirmLabel: 'Leave', cancelLabel: 'Stay in class', tone: 'danger',
+    }).then((ok) => {
+      if (!ok || !leaveBtn.isConnected) return
+      leaveConfirmed.current = true
+      leaveBtn.click()
+      appToast.info('You left the class', 'It is still live. Rejoin it from Tutor Session.')
+    })
   }
 
   // Minimized: a floating window above everything (including modals), so the

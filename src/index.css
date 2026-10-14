@@ -1,5 +1,24 @@
 @import "tailwindcss";
 
+/* Toasts + confirm dialog (components/Feedback.jsx) */
+@keyframes fb-toast-in {
+  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes fb-toast-bar { from { width: 100%; } to { width: 0%; } }
+@keyframes fb-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes fb-fade { from { opacity: 0; } to { opacity: 1; } }
+.fb-toast { animation: fb-toast-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2); }
+.fb-toast-bar { animation-name: fb-toast-bar; animation-timing-function: linear; animation-fill-mode: forwards; }
+.fb-pop { animation: fb-pop 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.1); }
+.fb-fade { animation: fb-fade 0.15s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .fb-toast, .fb-pop, .fb-fade { animation: none; }
+}
+
 /* AI Practice — "generating" indicator animations */
 @keyframes gen-slide {
   0%   { transform: translateX(-120%); }

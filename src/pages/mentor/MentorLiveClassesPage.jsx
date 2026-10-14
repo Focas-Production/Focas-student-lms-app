@@ -7,6 +7,7 @@ import ScheduleCalendar from '../../components/ScheduleCalendar'
 import DateField from '../../components/DateField'
 import { isHallSession, sessionTypeLabel } from '../../utils/sessionTypes'
 import { useLiveSession } from '../../components/LiveSessionProvider'
+import { useToast, useConfirm } from '../../components/feedbackContext'
 
 function fmtWhen(d) {
   if (!d) return ''
@@ -153,20 +154,19 @@ function CoveredModal({ cls, subject, busyKey, error, onToggle, onClose }) {
 // ended without them pressing End (see the catch-up effect). The one thing a
 // mentor forgets after a session is saying what it finished, so the booked
 // chapter/unit is ONE checkbox row, unticked until they tick it — this
-// class's own answer, never the subject-wide flag (which a previous session
-// on the same chapter may already have set; that case gets a note). Anything
-// extra sits behind "also finished…". Done without a tick means "not
-// finished" and is recorded as the answer.
-//   progress — progressFor(syllabus, cls): the item's ids + syllabus flag, or null
-//   late     — the catch-up variant, for a class that ended on its own
-function ClassEndedModal({ cls, subject, progress: p, busyKey, error, late, onSetDone, onToggle, onClose }) {
+// class's own answer, never the subject-wide flag (a previous session on the
+// same chapter may already have set it — each class is still asked on its
+// own, with no mention of other classes). Anything extra sits behind "also
+// finished…". Done without a tick means "not finished" and is recorded as
+// the answer.
+//   late — the catch-up variant, for a class that ended on its own
+function ClassEndedModal({ cls, subject, busyKey, error, late, onSetDone, onToggle, onClose }) {
   const [showMore, setShowMore] = useState(false)
   const hasItem = !!cls.chapter?.chapterId
   const isUnit = !!cls.unit?.unitId
   const name = isUnit ? cls.unit?.name : cls.chapter?.name
   const kind = isUnit ? 'unit' : 'chapter'
   const done = sessionDone(cls, null)
-  const alreadyOnSyllabus = !done && !!p?.completed
   const primaryKey = `${cls.chapter?.chapterId || ''}:${cls.unit?.unitId || ''}`
   const saving = busyKey === primaryKey
   const busy = !!busyKey
@@ -227,12 +227,6 @@ function ClassEndedModal({ cls, subject, progress: p, busyKey, error, late, onSe
                   {saving ? 'Saving…' : done ? 'Completed' : 'Not finished'}
                 </span>
               </button>
-              {alreadyOnSyllabus && (
-                <p className="mt-2 text-[11px] text-gray-500 leading-relaxed">
-                  ⓘ This {kind} is already marked completed on your syllabus from an earlier session.
-                  Tick only if this class finished it too.
-                </p>
-              )}
               {done && (
                 <p className="mt-2 text-[11px] text-teal-700 leading-relaxed">
                   Students who attended enough of this class get it completed automatically.
@@ -791,6 +785,8 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
 // layout level, so a minimized class survives navigating to other mentor pages.
 // This page starts/enters sessions through the context and reflects their state.
 export default function MentorLiveClassesPage() {
+  const toast = useToast()
+  const confirmAsk = useConfirm()
   const [classes, setClasses]   = useState(null)
   const [loadError, setLoadError] = useState('')   // why the list is empty, if it failed
   const [busyId, setBusyId]     = useState(null)
@@ -884,16 +880,34 @@ export default function MentorLiveClassesPage() {
   // come through here. The server marks the syllabus item done the first
   // time a session completes it, and only undoes that if it was this very
   // session's tick (see setClassOutcome).
+  // The after-End prompt keeps its own copy of the class, because the class
+  // is often not on the current list page (upcoming classes come first).
+  // Fold every saved answer back into that copy, or the prompt keeps showing
+  // the pre-tick state — and closing it would send "not finished" over the tick.
+  const syncEnded = (saved) => {
+    if (!saved?._id) return
+    setEnded((cur) => (cur && String(cur._id) === String(saved._id) ? { ...cur, ...saved } : cur))
+  }
+
   const setOutcome = async (cls, completed) => {
     setError('')
     setCoveredBusy(`${cls.chapter?.chapterId || ''}:${cls.unit?.unitId || ''}`)
     try {
-      await apiFetch(`/api/live-classes/manage/${cls._id}/outcome`, {
+      const d = await apiFetch(`/api/live-classes/manage/${cls._id}/outcome`, {
         method: 'POST', body: JSON.stringify({ completed }),
       })
+      syncEnded(d?.liveClass)
       await Promise.all([load(), loadSyllabus()])
+      // After the refresh, so the toast and the card never disagree.
+      const name = (cls.unit?.unitId ? cls.unit?.name : cls.chapter?.name) || 'Chapter'
+      if (completed) {
+        toast.success(`${name} marked completed`, 'Students who attended enough of this class get it automatically.')
+      } else {
+        toast.info(`${name} marked not finished`, 'Removed for this class.')
+      }
     } catch (err) {
       setError(err.message || 'Could not update')
+      toast.error('Could not save', err.message || 'Please try again.')
     } finally {
       setCoveredBusy(null)
     }
@@ -908,16 +922,29 @@ export default function MentorLiveClassesPage() {
     setError('')
     setCoveredBusy(`${chapterId}:${unitId || ''}`)
     try {
-      await apiFetch(`/api/live-classes/manage/${cls._id}/covered`, {
+      const d = await apiFetch(`/api/live-classes/manage/${cls._id}/covered`, {
         method: 'POST',
         body: JSON.stringify({ chapterId, unitId: unitId || undefined, covered: next }),
       })
+      syncEnded(d?.liveClass)
+      const name = itemName(cls.subject?.subjectId, chapterId, unitId)
       await Promise.all([load(), loadSyllabus()])
+      if (next) toast.success(`${name} marked completed`, 'Added to what this class finished.')
+      else toast.info(`${name} unmarked`, 'Removed from what this class finished.')
     } catch (err) {
       setError(err.message || 'Could not update')
+      toast.error('Could not save', err.message || 'Please try again.')
     } finally {
       setCoveredBusy(null)
     }
+  }
+
+  // Display name of a chapter/unit in the loaded syllabus, for toasts.
+  const itemName = (subjectId, chapterId, unitId) => {
+    const s = syllabus?.find((x) => String(x._id) === String(subjectId))
+    const ch = s?.chapters?.find((x) => String(x._id) === String(chapterId))
+    const u = unitId ? (ch?.units || []).find((x) => String(x._id) === String(unitId)) : null
+    return u?.name || ch?.name || (unitId ? 'Unit' : 'Chapter')
   }
 
   // Completion state of the chapter/unit a class taught — for the quick-mark
@@ -952,8 +979,7 @@ export default function MentorLiveClassesPage() {
     const isUnit = !!c.unit?.unitId
     const name = isUnit ? c.unit?.name : c.chapter?.name
     const kind = isUnit ? 'unit' : 'chapter'
-    // This class's own answer — with the syllabus flag as a footnote when an
-    // earlier session already completed the item.
+    // This class's own answer (the syllabus flag only for legacy classes).
     const done = sessionDone(c, p)
     const busy = coveredBusy === `${c.chapter?.chapterId || ''}:${c.unit?.unitId || ''}`
     return (
@@ -962,8 +988,7 @@ export default function MentorLiveClassesPage() {
           <button onClick={() => setOutcome(c, !done)} disabled={busy}
             title={done
               ? `"${name}" was completed in this class — click to undo`
-              : `Mark the ${kind} "${name}" as completed in this class${
-                  p?.completed ? ' (already completed on the syllabus from an earlier session)' : ''}`}
+              : `Mark the ${kind} "${name}" as completed in this class`}
             className={`${size} rounded-xl font-semibold whitespace-nowrap border max-w-[180px] sm:max-w-[220px] truncate disabled:opacity-60 ${
               done
                 ? 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100'
@@ -994,7 +1019,12 @@ export default function MentorLiveClassesPage() {
   }
 
   const endClass = async (cls) => {
-    if (!confirm('End this class for everyone?')) return
+    const ok = await confirmAsk({
+      title: 'End this class?',
+      message: 'Everyone in the room will be disconnected and the class will be marked as ended. This can\'t be undone.',
+      confirmLabel: 'End class', cancelLabel: 'Keep it live', tone: 'danger',
+    })
+    if (!ok) return
     setBusyId(cls._id); setError('')
     try {
       const d = await apiFetch(`/api/live-classes/manage/${cls._id}/end`, { method: 'POST' })
@@ -1007,6 +1037,7 @@ export default function MentorLiveClassesPage() {
       if (cls.subject?.subjectId) setEnded({ ...cls, ...(d?.liveClass || {}), status: 'ended', late: false })
     } catch (err) {
       setError(err.message || 'Could not end the class')
+      toast.error('Could not end the class', err.message || 'Please try again.')
     } finally {
       setBusyId(null)
     }
@@ -1021,8 +1052,11 @@ export default function MentorLiveClassesPage() {
     if (c?.outcome && !c.outcome.answeredAt && !c.outcome.completed) {
       try {
         await apiFetch(`/api/live-classes/manage/${c._id}/outcome`, {
-          method: 'POST', body: JSON.stringify({ completed: false }),
+          // ifUnanswered: the server keeps any answer already saved — a stale
+          // copy here must never turn a real tick into "not finished".
+          method: 'POST', body: JSON.stringify({ completed: false, ifUnanswered: true }),
         })
+        toast.info('Saved as not finished', 'You can still mark it from the class card later.')
         await load()
       } catch { /* asked again next time — harmless */ }
     }
@@ -1032,14 +1066,21 @@ export default function MentorLiveClassesPage() {
   // while it's still scheduled; once live, End is the way out (server enforces both).
   const canCancel = (c) => c.status === 'scheduled'
   const cancelOwn = async (cls) => {
-    if (!confirm('Cancel this class? Students will no longer see it.')) return
+    const ok = await confirmAsk({
+      title: 'Cancel this class?',
+      message: 'Students will no longer see it in their schedule.',
+      confirmLabel: 'Cancel class', cancelLabel: 'Keep class', tone: 'danger',
+    })
+    if (!ok) return
     setBusyId(cls._id); setError('')
     try {
       await apiFetch(`/api/live-classes/manage/${cls._id}/cancel`, { method: 'POST' })
+      toast.success('Class cancelled', cls.title)
       setCalTick((t) => t + 1)
       await load()
     } catch (err) {
       setError(err.message || 'Could not cancel the class')
+      toast.error('Could not cancel the class', err.message || 'Please try again.')
     } finally {
       setBusyId(null)
     }
@@ -1291,9 +1332,8 @@ export default function MentorLiveClassesPage() {
       {ended && (() => {
         const cls = classes?.find((c) => c._id === ended._id) || ended
         const subject = syllabus?.find((s) => String(s._id) === String(cls.subject?.subjectId))
-        const p = classProgress(cls)
         return (
-          <ClassEndedModal cls={cls} subject={subject} progress={p} busyKey={coveredBusy} error={error} late={!!ended.late}
+          <ClassEndedModal cls={cls} subject={subject} busyKey={coveredBusy} error={error} late={!!ended.late}
             onSetDone={(next) => setOutcome(cls, next)}
             onToggle={(chapterId, unitId, isPrimary, next) => toggleCovered(cls, chapterId, unitId, isPrimary, next)}
             onClose={closeEndedPrompt} />

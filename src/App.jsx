@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { BrowserRouter } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext'
 import AppRouter from './router/AppRouter'
+import { FeedbackProvider } from './components/Feedback'
 import './App.css'
 
 export default function App() {
@@ -17,7 +18,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppRouter />
+        <FeedbackProvider>
+          <AppRouter />
+        </FeedbackProvider>
       </AuthProvider>
     </BrowserRouter>
   )
