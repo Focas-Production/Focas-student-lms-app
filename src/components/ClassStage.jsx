@@ -92,9 +92,16 @@ function fitBar(row) {
 // onBarHeight(px) — the bar's live height, so overlays can stop above it.
 // hands — [{ id, name }] students with a hand up in this room; each one's
 // camera tile wears a 🖐 badge until they lower it or leave.
+// SOUND OFF (as in Meet's "Turn off sound"): silences everyone else in the
+// room for this viewer only — their own mic is untouched. It also stops
+// downloading the audio (RoomAudioRenderer's `muted` disables the remote
+// tracks), which helps on mobile data. Not remembered: every class, and every
+// reload, starts with sound on. While it's off a reminder sits above the bar,
+// one tap to undo, because on a phone the switch itself is behind ⋯.
 export default function ClassStage({ compact = false, extraControls = null, primaryControls = null, hands = [], onBarHeight }) {
   const [widgetState, setWidgetState] = useState({ showChat: false, unreadMessages: 0, showSettings: false })
   const [moreOpen, setMoreOpen] = useState(false)
+  const [soundOff, setSoundOff] = useState(false)
   const rowRef = useRef(null)
   const sheetRef = useRef(null)
   const moreBtnRef = useRef(null)
@@ -203,62 +210,84 @@ export default function ClassStage({ compact = false, extraControls = null, prim
             {/* One row: LiveKit's bar plus the caller's buttons (styles in LiveRoom's LIVE_LAYOUT_CSS) */}
             <div className="focas-control-row" ref={rowRef}>
               <ControlBar controls={{ chat: true, settings: false }} />
-              {(primaryControls || extraControls) && (
-                <div className="focas-extra-controls">
-                  {primaryControls}
-                  {extraControls && (
-                    <>
-                      {/* Compact mode only (CSS hides it otherwise). */}
-                      <button
-                        ref={moreBtnRef}
-                        type="button"
-                        className="lk-button focas-more-btn"
-                        onClick={() => setMoreOpen((v) => !v)}
-                        aria-expanded={moreOpen}
-                        aria-controls="focas-more-sheet"
-                        aria-label={moreOpen ? 'Close more controls' : 'More controls'}
-                        title="More controls"
-                      >
-                        <span aria-hidden="true">{moreOpen ? '✕' : '⋯'}</span>
-                      </button>
-                      {/* Inline in the row on wide screens (display: contents);
-                          a sheet above the bar in compact mode. */}
-                      <div
-                        id="focas-more-sheet"
-                        ref={sheetRef}
-                        className="focas-more-sheet"
-                        data-open={moreOpen ? 'true' : undefined}
-                        onClick={onSheetClick}
-                      >
-                        <div className="focas-more-devices focas-keep-sheet">
-                          <FlipCameraButton onDone={() => setMoreOpen(false)} />
-                          {/* A list, not a toggle — the mic on/off is the bar's
-                              🎙. The label says so, because "Microphone" read as
-                              the switch. (Its children ignore taps: see the
-                              .focas-more-devices rule in LiveRoom's CSS.) */}
-                          <MediaDeviceMenu
-                            kind="audioinput"
-                            className="lk-button"
-                            onActiveDeviceChange={() => setMoreOpen(false)}
-                          >
-                            <span aria-hidden="true">🎧</span>
-                            <span className="focas-ctl-label">Choose microphone</span>
-                          </MediaDeviceMenu>
-                        </div>
-                        {extraControls}
-                      </div>
-                    </>
-                  )}
+              <div className="focas-extra-controls">
+                {primaryControls}
+                {/* Compact mode only (CSS hides it otherwise). */}
+                <button
+                  ref={moreBtnRef}
+                  type="button"
+                  className="lk-button focas-more-btn"
+                  onClick={() => setMoreOpen((v) => !v)}
+                  aria-expanded={moreOpen}
+                  aria-controls="focas-more-sheet"
+                  aria-label={moreOpen ? 'Close more controls' : 'More controls'}
+                  title="More controls"
+                >
+                  <span aria-hidden="true">{moreOpen ? '✕' : '⋯'}</span>
+                </button>
+                {/* Inline in the row on wide screens (display: contents);
+                    a sheet above the bar in compact mode. */}
+                <div
+                  id="focas-more-sheet"
+                  ref={sheetRef}
+                  className="focas-more-sheet"
+                  data-open={moreOpen ? 'true' : undefined}
+                  onClick={onSheetClick}
+                >
+                  <SoundButton off={soundOff} onToggle={() => setSoundOff((v) => !v)} />
+                  <div className="focas-more-devices focas-keep-sheet">
+                    <FlipCameraButton onDone={() => setMoreOpen(false)} />
+                    {/* A list, not a toggle — the mic on/off is the bar's
+                        🎙. The label says so, because "Microphone" read as
+                        the switch. (Its children ignore taps: see the
+                        .focas-more-devices rule in LiveRoom's CSS.) */}
+                    <MediaDeviceMenu
+                      kind="audioinput"
+                      className="lk-button"
+                      onActiveDeviceChange={() => setMoreOpen(false)}
+                    >
+                      <span aria-hidden="true">🎧</span>
+                      <span className="focas-ctl-label">Choose microphone</span>
+                    </MediaDeviceMenu>
+                  </div>
+                  {extraControls}
                 </div>
-              )}
+              </div>
             </div>
           </div>
           <Chat style={{ display: widgetState.showChat ? 'grid' : 'none' }} />
         </LayoutContextProvider>
       </HandsContext.Provider>
-      <RoomAudioRenderer />
+      <RoomAudioRenderer muted={soundOff} />
+      {soundOff && (
+        <button
+          type="button"
+          className="focas-sound-off-pill"
+          onClick={() => setSoundOff(false)}
+          title="Turn sound back on"
+        >
+          <span aria-hidden="true">🔇</span> Sound is off · <u>Turn on</u>
+        </button>
+      )}
       <ConnectionStateToast />
     </div>
+  )
+}
+
+// The bar's sound switch — see SOUND OFF above ClassStage.
+function SoundButton({ off, onToggle }) {
+  return (
+    <button
+      type="button"
+      className="lk-button focas-sound-btn"
+      data-off={off ? 'true' : undefined}
+      onClick={onToggle}
+      aria-pressed={off}
+      title={off ? 'Turn sound back on' : 'Turn off sound — you won\'t hear anyone in the class'}
+    >
+      <span aria-hidden="true">{off ? '🔇' : '🔊'}</span>
+      <span className="focas-ctl-label">{off ? 'Turn on sound' : 'Turn off sound'}</span>
+    </button>
   )
 }
 

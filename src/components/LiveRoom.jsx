@@ -221,6 +221,18 @@ const LIVE_LAYOUT_CSS = `
 .focas-extra-controls > .focas-timer-slot > * { order: 60; }
 .focas-bg-wrap { position: relative; display: inline-flex; }
 .focas-pnum { display: none; }
+/* Sound off (ClassStage's SoundButton): the switch turns red, and a reminder
+   sits just above the bar, bottom-left — clear of the student's media pill
+   (bottom-centre) and the camera banners (top-centre). Tapping it undoes. */
+.focas-sound-btn[data-off] { background: rgba(185,28,28,0.85); color: #fff; }
+.focas-sound-off-pill {
+  position: absolute; left: 8px; bottom: calc(var(--focas-bar-h, 64px) + 8px); z-index: 30;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 999px; border: 1px solid rgba(248,113,113,0.5);
+  background: rgba(127,29,29,0.92); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+}
+.focas-pip .focas-sound-off-pill { bottom: 8px; }
 
 /* ── Compact: phones in either orientation (a landscape phone is wide but
    only ~390px tall — a two-line bar there left the class a letterbox), and
