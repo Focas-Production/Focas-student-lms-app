@@ -138,7 +138,13 @@ const LIVE_LAYOUT_CSS = `
   min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden;
 }
 .focas-side-grid > * { aspect-ratio: 16 / 10; min-height: 0; }
-.focas-focus > .lk-carousel { height: 100%; }
+/* Strip under the share: one row, fixed order, scrolls sideways if the class
+   doesn't fit (ClassStage's FocusStage, mode "strip"). */
+.focas-strip {
+  display: flex; gap: var(--lk-grid-gap); height: 100%;
+  min-width: 0; min-height: 0; overflow-x: auto; overflow-y: hidden;
+}
+.focas-strip > * { flex: none; height: 100%; aspect-ratio: 16 / 10; }
 /* Each tile sits in a wrapper (ClassStage's HandTile) so a raised hand can be
    laid over it; the wrapper is the grid/carousel item and the tile fills it. */
 .focas-tile { position: relative; display: grid; min-width: 0; min-height: 0; }

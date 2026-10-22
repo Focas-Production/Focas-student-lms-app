@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { RoomEvent, Track, facingModeFromLocalTrack } from 'livekit-client'
 import {
-  CarouselLayout, Chat, ConnectionStateToast, ControlBar, FocusLayout, GridLayout,
+  Chat, ConnectionStateToast, ControlBar, FocusLayout, GridLayout,
   LayoutContextProvider, MediaDeviceMenu, ParticipantTile, RoomAudioRenderer, TrackLoop,
   isTrackReference, useCreateLayoutContext, useLocalParticipant, usePinnedTracks, useRoomContext,
   useTrackRefContext, useTracks,
@@ -458,13 +458,19 @@ function FocusStage({ focusTrack, others, compact }) {
         <div className="focas-focus-main">
           <FocusLayout trackRef={focusTrack} />
         </div>
-        {mode === 'side' && (
-          <div className="focas-side-grid" style={{ gridTemplateColumns: `repeat(${sideCols}, minmax(0, 1fr))` }}>
+        {/* ONE element for both side and strip, so switching between them
+            (opening the chat narrows the stage) restyles the tiles instead of
+            remounting them — a remount re-attaches every video and the faces
+            flash black. The strip is a plain scrolling row in a fixed order,
+            not LiveKit's CarouselLayout: that one re-sorts its tiles by active
+            speaker whenever they don't all fit, so faces kept jumping around. */}
+        {mode !== 'solo' && (
+          <div
+            className={mode === 'side' ? 'focas-side-grid' : 'focas-strip'}
+            style={mode === 'side' ? { gridTemplateColumns: `repeat(${sideCols}, minmax(0, 1fr))` } : undefined}
+          >
             <TrackLoop tracks={others}><HandTile /></TrackLoop>
           </div>
-        )}
-        {mode === 'strip' && (
-          <CarouselLayout tracks={others} orientation="horizontal"><HandTile /></CarouselLayout>
         )}
       </div>
     </div>
