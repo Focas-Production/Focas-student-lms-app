@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth, getRole } from './AuthContext'
+import { getDeviceId } from '../lib/deviceId'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -51,7 +52,7 @@ export default function LoginPage() {
       const body = tab === 'phone' ? { phoneNumber: identifier.trim() } : { email: identifier.trim() }
       const res  = await fetch(`${API_BASE}/api/auth/send-otp`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Device-Id': getDeviceId() },
         body: JSON.stringify(body),
       })
       const data = await res.json()
@@ -79,7 +80,7 @@ export default function LoginPage() {
         : { email: identifier.trim(), otp: code }
       const res  = await fetch(`${API_BASE}/api/auth/verify-otp`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Device-Id': getDeviceId() },
         body: JSON.stringify({
           ...body,
           screenResolution: `${window.screen.width}x${window.screen.height}`,
@@ -121,7 +122,7 @@ export default function LoginPage() {
         : { email: identifier.trim() }
       const logoutRes = await fetch(`${API_BASE}/api/auth/logout-other-device`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Device-Id': getDeviceId() },
         body: JSON.stringify(logoutBody),
       })
       if (!logoutRes.ok) throw new Error('Failed to logout from other device')
@@ -129,7 +130,7 @@ export default function LoginPage() {
       const body = deviceConflict.loginData
       const res = await fetch(`${API_BASE}/api/auth/verify-otp`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Device-Id': getDeviceId() },
         body: JSON.stringify({
           ...body,
           screenResolution: `${window.screen.width}x${window.screen.height}`,

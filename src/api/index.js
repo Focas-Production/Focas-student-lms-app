@@ -1,3 +1,5 @@
+import { getDeviceId } from '../lib/deviceId'
+
 const BASE = import.meta.env.VITE_API_BASE
 
 export function authHeaders() {
@@ -5,6 +7,7 @@ export function authHeaders() {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${localStorage.getItem('student_token')}`,
     'ngrok-skip-browser-warning': 'true',
+    'X-Device-Id': getDeviceId(),
   }
 }
 
