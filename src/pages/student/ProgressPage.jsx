@@ -5,6 +5,10 @@
 // Read-only throughout: completion is earned by attendance and confirmed by a
 // mentor, never self-declared. Laid out as tabs rather than one long scroll
 // because most students open this on a phone.
+//
+// Progress is kept per batch (e.g. a repeater's Jan 2027 and May 2027). The
+// page shows the current batch; a student with earlier batches gets a picker to
+// look back at one — every tab then reads that batch (?attemptId=).
 import { useState, useEffect, useMemo } from 'react'
 import { apiFetch } from '../../api'
 import { enrollmentLabel } from '../../lib/ca'
@@ -378,8 +382,8 @@ const ATT_STATUS = [
 ]
 const ATT_BADGE = { present: ['emerald', 'Present'], late: ['amber', 'Late'], absent: ['rose', 'Absent'] }
 
-function AttendanceTab() {
-  const [filters, setFilters] = useState({ page: 1, limit: 15, status: '', subjectId: '' })
+function AttendanceTab({ attemptId }) {
+  const [filters, setFilters] = useState({ page: 1, limit: 15, status: '', subjectId: '', attemptId })
   const set = (patch) => setFilters(f => ({ ...f, page: 1, ...patch }))
   const { data, error, loading } = useResource('/api/progress/me/attendance-log', filters)
 
@@ -467,8 +471,8 @@ const TEST_STATUS = [
 ]
 const TEST_BADGE = { completed: ['emerald', 'Evaluated'], assigned: ['blue', 'Under review'], pending: ['amber', 'Waiting'] }
 
-function TestsTab({ bySubject }) {
-  const [filters, setFilters] = useState({ page: 1, limit: 15, status: '', subjectId: '' })
+function TestsTab({ bySubject, attemptId }) {
+  const [filters, setFilters] = useState({ page: 1, limit: 15, status: '', subjectId: '', attemptId })
   const [fileError, setFileError] = useState('')
   const set = (patch) => setFilters(f => ({ ...f, page: 1, ...patch }))
   const { data, error, loading } = useResource('/api/progress/me/test-marks', filters)
@@ -608,8 +612,9 @@ function TestsTab({ bySubject }) {
 
 // ───────────────────────────── lectures tab ─────────────────────────────
 
-function LecturesTab() {
-  const { data, error, loading } = useResource('/api/progress/me/lectures', null)
+function LecturesTab({ attemptId }) {
+  const params = useMemo(() => (attemptId ? { attemptId } : null), [attemptId])
+  const { data, error, loading } = useResource('/api/progress/me/lectures', params)
   const [showAll, setShowAll] = useState(false)
 
   const groups = useMemo(() => {
@@ -682,8 +687,29 @@ const TABS = [
   { key: 'lectures',   label: 'Lectures' },
 ]
 
+// "Batch: Intermediate · May 2027 (current)" — only for students with more
+// than one batch. Picking an earlier one re-reads every tab for that batch.
+function BatchPicker({ attempts, value, onChange }) {
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Batch</span>
+      <select value={value} onChange={e => onChange(e.target.value)} className={`${selectCls} w-full sm:w-72`}>
+        {attempts.map(a => (
+          <option key={a.id} value={a.current ? '' : a.id}>
+            {a.label}{a.current ? ' (current)' : ` (${fmtDay(a.startedAt)} – ${fmtDay(a.endedAt)})`}{a.completion ? ` · ${a.completion.label}` : ''}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 export default function ProgressPage() {
-  const { data: report, error, loading } = useResource('/api/progress/me', null)
+  const [attemptId, setAttemptId] = useState('')   // '' = current batch
+  const reportParams = useMemo(() => (attemptId ? { attemptId } : null), [attemptId])
+  const { data: report, error, loading } = useResource('/api/progress/me', reportParams)
+  const { data: attemptData } = useResource('/api/progress/me/attempts', null)
+  const attempts = attemptData?.attempts || []
   const [tab, setTab] = useState('subjects')
 
   const enrolled = report ? enrollmentLabel(report.student) : ''
@@ -710,18 +736,38 @@ export default function ProgressPage() {
   }
 
   const { syllabus, classes, attendance, tests, lectures, forecast, thresholdPercent } = report
+  const batch = report.attempt
+  const pastBatch = batch && !batch.current
+  const current = attempts.find(a => a.current)
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto">
       <div className="mb-4">
         <h1 className="text-xl md:text-2xl font-bold text-gray-900">My Progress</h1>
         <p className="text-gray-400 text-sm mt-1">
-          {enrolled && <span className="text-indigo-500 font-medium">{enrolled} · </span>}
-          {papers.length > 0 && <span className="text-gray-500">{papers.join(', ')} · </span>}
+          {(pastBatch ? batch.label : enrolled) && <span className="text-indigo-500 font-medium">{pastBatch ? batch.label : enrolled} · </span>}
+          {papers.length > 0 && !pastBatch && <span className="text-gray-500">{papers.join(', ')} · </span>}
           A topic is done once your mentor has finished teaching it and you attended
           {thresholdPercent != null ? ` at least ${thresholdPercent}%` : ' enough'} of its classes.
         </p>
       </div>
+
+      {attempts.length > 1 && <BatchPicker attempts={attempts} value={attemptId} onChange={setAttemptId} />}
+      {pastBatch && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-2.5 text-xs text-amber-800 mb-3 flex items-center gap-3 flex-wrap">
+          <span>
+            You're looking at your earlier batch <b>{batch.label}</b> ({fmtDay(batch.startedAt)} – {fmtDay(batch.endedAt)}).
+            {current && <> Your progress now is in <b>{current.label}</b>.</>}
+          </span>
+          <button onClick={() => setAttemptId('')} className="ml-auto font-semibold text-amber-900 underline">Back to current</button>
+        </div>
+      )}
+      {batch?.completion && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3.5 py-2.5 text-xs text-emerald-800 mb-3">
+          🎓 <b>{batch.completion.label}</b>
+          {batch.current && ' — congratulations!'} Marked on {fmtDay(batch.completion.at)}.
+        </div>
+      )}
 
       <div className="grid grid-cols-2 xl:grid-cols-5 gap-2.5 md:gap-3 mb-4">
         <Stat label="Overall progress" value={`${syllabus.percent}%`} tone={toneFor(syllabus.percent)} bar={syllabus.percent}
@@ -754,9 +800,9 @@ export default function ProgressPage() {
       </div>
 
       {tab === 'subjects'   && <SubjectsTab syllabus={syllabus} classes={classes} thresholdPercent={thresholdPercent} />}
-      {tab === 'attendance' && <AttendanceTab />}
-      {tab === 'tests'      && <TestsTab bySubject={tests.bySubject} />}
-      {tab === 'lectures'   && <LecturesTab />}
+      {tab === 'attendance' && <AttendanceTab key={`att-${attemptId}`} attemptId={attemptId} />}
+      {tab === 'tests'      && <TestsTab key={`tests-${attemptId}`} bySubject={tests.bySubject} attemptId={attemptId} />}
+      {tab === 'lectures'   && <LecturesTab key={`lec-${attemptId}`} attemptId={attemptId} />}
     </div>
   )
 }
