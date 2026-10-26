@@ -157,8 +157,8 @@ function CoveredModal({ cls, subject, busyKey, error, onToggle, onClose }) {
 // class's own answer, never the subject-wide flag (a previous session on the
 // same chapter may already have set it — each class is still asked on its
 // own, with no mention of other classes). Anything extra sits behind "also
-// finished…". Done without a tick means "not finished" and is recorded as
-// the answer.
+// finished…". Closing (×) without a tick means "not finished" and is recorded
+// as the answer; the footer button only appears once something is ticked.
 //   late — the catch-up variant, for a class that ended on its own
 function ClassEndedModal({ cls, subject, busyKey, error, late, onSetDone, onToggle, onClose }) {
   const [showMore, setShowMore] = useState(false)
@@ -174,7 +174,10 @@ function ClassEndedModal({ cls, subject, busyKey, error, late, onSetDone, onTogg
   const ran = runDuration(cls)
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={busy ? undefined : onClose}>
+    // A stray click outside must not quietly record "not finished" — unticked,
+    // only × closes it.
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+      onClick={busy || (hasItem && !done) ? undefined : onClose}>
       <div role="dialog" aria-modal="true" aria-labelledby="class-ended-title"
         className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[88vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}>
@@ -206,15 +209,20 @@ function ClassEndedModal({ cls, subject, busyKey, error, late, onSetDone, onTogg
 
           {hasItem ? (
             <>
-              <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-2">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
                 Did you finish the scheduled {kind}?
+              </p>
+              <p className={`text-xs font-semibold mt-1 mb-2 ${done ? 'text-teal-700' : 'text-amber-700'}`}>
+                {done
+                  ? `✓ Ticked — the ${kind} is marked completed.`
+                  : `👉 Tick the checkbox below to mark this ${kind} completed.`}
               </p>
               <button type="button" role="checkbox" aria-checked={done} disabled={busy}
                 onClick={() => onSetDone(!done)}
                 className={`w-full text-left rounded-xl border-2 p-3.5 flex items-center gap-3 transition disabled:opacity-60 ${
-                  done ? 'border-teal-500 bg-teal-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                  done ? 'border-teal-500 bg-teal-50' : 'border-amber-300 bg-amber-50/40 hover:border-teal-400'}`}>
                 <span className={`w-6 h-6 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition ${
-                  done ? 'bg-teal-600 border-teal-600 text-white' : 'border-gray-300 bg-white'}`}>
+                  done ? 'bg-teal-600 border-teal-600 text-white' : 'border-gray-400 bg-white'}`}>
                   {done && <CheckIcon />}
                 </span>
                 <span className="min-w-0 flex-1">
@@ -223,8 +231,8 @@ function ClassEndedModal({ cls, subject, busyKey, error, late, onSetDone, onTogg
                     {[cls.subject?.name, isUnit ? cls.chapter?.name : null].filter(Boolean).join(' · ')}
                   </span>
                 </span>
-                <span className={`text-[11px] font-semibold flex-shrink-0 ${done ? 'text-teal-700' : 'text-gray-400'}`}>
-                  {saving ? 'Saving…' : done ? 'Completed' : 'Not finished'}
+                <span className={`text-[11px] font-semibold flex-shrink-0 ${done ? 'text-teal-700' : 'text-amber-700'}`}>
+                  {saving ? 'Saving…' : done ? 'Completed' : 'Tick to mark'}
                 </span>
               </button>
               {done && (
@@ -252,14 +260,27 @@ function ClassEndedModal({ cls, subject, busyKey, error, late, onSetDone, onTogg
           </div>
         </div>
 
+        {/* No "Done" button while nothing is ticked: mentors read "Done" as
+            "chapter done" and pressed it instead of the checkbox, which saved
+            the class as NOT finished. Unticked, the only way out is ×, with
+            the consequence spelled out; once ticked, Close is safe. */}
         <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3">
-          <p className="text-[11px] text-gray-500">
-            {hasItem && (done ? `${isUnit ? 'Unit' : 'Chapter'} marked completed for this class.` : `Nothing ticked — the ${kind} stays unmarked.`)}
-          </p>
-          <button onClick={onClose} disabled={busy}
-            className="px-4 py-2 rounded-xl bg-gray-900 text-white text-sm font-semibold hover:bg-black disabled:opacity-60 flex-shrink-0">
-            Done
-          </button>
+          {hasItem && !done ? (
+            <p className="text-[11px] text-gray-600 leading-relaxed">
+              Not finished yet (continues next class)? Close with <b>×</b> — it is saved as <b>not finished</b>.
+              You can still tick it later from the class card.
+            </p>
+          ) : (
+            <>
+              <p className="text-[11px] text-gray-500">
+                {hasItem && `${isUnit ? 'Unit' : 'Chapter'} marked completed for this class.`}
+              </p>
+              <button onClick={onClose} disabled={busy}
+                className="px-4 py-2 rounded-xl bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:opacity-60 flex-shrink-0">
+                Close
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
