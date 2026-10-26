@@ -3,8 +3,9 @@ import { apiFetch } from '../../api'
 import SyllabusProgress from '../../components/SyllabusProgress'
 
 // Syllabus progress on its own page. Scoped by the server to the subjects this
-// mentor actually hosts classes for, so it's their teaching checklist rather
-// than the whole curriculum. Marking an item here is also one half of what
+// mentor actually hosts classes for (cancelled bookings don't count), and ticks
+// only what this mentor completed — another mentor's work on the same subject
+// stays off this list and out of the totals. Marking an item here is also one half of what
 // completes a chapter for a student — the other half is their attendance.
 export default function MentorSyllabusPage() {
   const [subjects, setSubjects] = useState(null)   // null = loading
@@ -41,7 +42,7 @@ export default function MentorSyllabusPage() {
         <h1 className="text-xl md:text-2xl font-bold text-gray-900">Syllabus Progress</h1>
         <p className="text-gray-400 text-sm mt-1">
           Mark chapters and units as you complete them — the admin schedules the next class from this,
-          and your students' chapters complete from it too.
+          and your students' chapters complete from it too. Only chapters you completed are ticked here.
         </p>
       </div>
 
