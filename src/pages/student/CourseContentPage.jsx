@@ -30,6 +30,15 @@ function fmtSize(bytes) {
   return `${Math.round(bytes / 1e3)} KB`
 }
 
+// Video length for the list row, e.g. "1h 42m" / "12m 5s"
+function fmtDuration(sec) {
+  if (!sec) return ''
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60)
+  if (h) return `${h}h ${m}m`
+  if (m) return `${m}m ${s}s`
+  return `${s}s`
+}
+
 function fmtTime(sec) {
   if (!sec) return '0:00'
   const h = Math.floor(sec / 3600)
@@ -151,12 +160,15 @@ function VideoItem({ item, productId, initialProgress }) {
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-gray-900 break-words leading-snug">{item.title}</p>
           <div className="flex items-center gap-2 mt-0.5">
-            {item.description && <p className="text-xs text-gray-400 break-words flex-1 min-w-0">{item.description}</p>}
+            {/* phone: length goes under the title so the title keeps its width */}
+            {item.durationSec > 0 && <span className="sm:hidden text-xs text-gray-500 font-medium whitespace-nowrap flex-shrink-0">⏱ {fmtDuration(item.durationSec)}</span>}
+            {item.description &&<p className="text-xs text-gray-400 break-words flex-1 min-w-0">{item.description}</p>}
             {resumeLabel && !open && !loadingUrl && <span className="text-xs text-indigo-500 font-semibold flex-shrink-0">▶ {resumeLabel}</span>}
             {watchedMin && !resumeLabel && !loadingUrl && <span className="text-xs text-green-500 font-medium flex-shrink-0">✓ {watchedMin}m</span>}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          {item.durationSec > 0 && <span className="hidden sm:inline text-xs text-gray-500 font-medium whitespace-nowrap">⏱ {fmtDuration(item.durationSec)}</span>}
           {item.size > 0 && <span className="hidden sm:inline text-xs text-gray-400 whitespace-nowrap">{fmtSize(item.size)}</span>}
           <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Video</span>
           <svg className={`w-4 h-4 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
