@@ -17,7 +17,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 //   accent           — 'teal' (mentor) | 'blue' (admin)
 //   onClose, onCountsChange
 
-const KIND_ICON = { audio: '🎙', video: '🎬', pdf: '📕', image: '🖼', doc: '📄', other: '📎' }
+const KIND_ICON = { audio: '🎙', video: '🎬', pdf: '📕', image: '🖼', doc: '📄', other: '📎', verbal: '🗣' }
+
+// Where a "heard in class" entry sits in the class recording, e.g. "at 12m".
+const fmtOffset = (ms) => {
+  if (ms == null) return ''
+  const m = Math.floor(ms / 60000)
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`
+}
 
 const fmtBytes = (b) => {
   if (!b) return ''
@@ -396,17 +403,36 @@ export function SubmissionRow({
                 <p className="text-[10px] text-gray-400">Each file can be graded on its own</p>
               )}
             </div>
-            <div className="space-y-1.5">
-              {s.files.map((f) => (
+            {/* Numbered and spaced, so "the 2nd photo" is easy to point at
+                and a spoken item with its question reads as one block. */}
+            <div className="space-y-3">
+              {s.files.map((f, i) => (
                 <div key={f.key}>
-                  <div className={`flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white border ${f.review ? 'border-emerald-200' : 'border-gray-200'}`}>
+                  <div className={`rounded-lg bg-white border ${f.review ? 'border-emerald-200' : 'border-gray-200'}`}>
+                  <div className="flex items-center gap-2 px-2.5 py-2">
+                    <span className="text-[11px] font-bold text-gray-400 w-5 text-right flex-shrink-0">{i + 1}.</span>
                     <span>{KIND_ICON[f.kind] || '📎'}</span>
-                    <button onClick={() => openFile(f)} className="text-xs text-gray-900 font-medium truncate flex-1 text-left hover:underline">
-                      {f.name}
-                    </button>
-                    <span className="text-[10px] text-gray-400 flex-shrink-0">
-                      {f.durationMs ? fmtClock(f.durationMs) : fmtBytes(f.size)}
-                    </span>
+                    {f.kind === 'verbal' ? (
+                      // Explained to the mentor out loud — nothing to open.
+                      <span className="text-xs text-gray-900 font-medium truncate flex-1"
+                        title={`Marked by ${f.verbal?.markedBy?.name || 'the mentor'}, confirmed by the student ${fmtWhen(f.verbal?.confirmedAt)}`}>
+                        {f.name}
+                      </span>
+                    ) : (
+                      <button onClick={() => openFile(f)} className="text-xs text-gray-900 font-medium truncate flex-1 text-left hover:underline">
+                        {f.name}
+                      </button>
+                    )}
+                    {f.kind === 'verbal' ? (
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 uppercase flex-shrink-0"
+                        title={`Marked by ${f.verbal?.markedBy?.name || 'the mentor'} · confirmed by the student ${fmtWhen(f.verbal?.confirmedAt)}${f.verbal?.recordingOffsetMs != null ? ` · ${fmtOffset(f.verbal.recordingOffsetMs)} into the recording` : ''}`}>
+                        Spoken in class{f.verbal?.recordingOffsetMs != null ? ` · ${fmtOffset(f.verbal.recordingOffsetMs)}` : ''}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-gray-400 flex-shrink-0">
+                        {f.durationMs ? fmtClock(f.durationMs) : fmtBytes(f.size)}
+                      </span>
+                    )}
                     {f.recorded && (
                       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 uppercase flex-shrink-0"
                         title="Recorded in the app during class">rec</span>
@@ -434,8 +460,18 @@ export function SubmissionRow({
                         ? `✓ ${f.review.marks != null ? `${f.review.marks}${f.review.totalMarks != null ? `/${f.review.totalMarks}` : ''}` : 'Reviewed'}`
                         : openFiles.has(f.key) ? 'Close' : 'Review'}
                     </button>
-                    <button onClick={() => download(f)} title="Download"
-                      className="text-gray-400 hover:text-gray-700 text-xs flex-shrink-0">⤓</button>
+                    {f.kind !== 'verbal' && (
+                      <button onClick={() => download(f)} title="Download"
+                        className="text-gray-400 hover:text-gray-700 text-xs flex-shrink-0">⤓</button>
+                    )}
+                  </div>
+                  {/* The mentor's note from "Heard in class" — usually the
+                      question the student answered out loud. */}
+                  {f.kind === 'verbal' && f.verbal?.note && (
+                    <p className="mx-2.5 mb-2 -mt-0.5 ml-[3.25rem] px-2 py-1 rounded bg-amber-50 text-[11px] text-amber-900 whitespace-pre-wrap">
+                      <span className="font-semibold">Mentor's question:</span> {f.verbal.note}
+                    </p>
+                  )}
                   </div>
                   {preview?.key === f.key && (
                     <div className="mt-1.5 px-2.5 py-2 rounded-lg bg-black/5">

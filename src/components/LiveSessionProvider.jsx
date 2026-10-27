@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef, la
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../api'
 import { useConfirm, useToast } from './feedbackContext'
+import { once, playConfirmed, playDeclined } from '../utils/chime'
 
 // Lazy-loaded so the LiveKit bundle only loads when a class is actually hosted.
 const LiveRoom = lazy(() => import('./LiveRoom'))
@@ -92,8 +93,8 @@ export default function LiveSessionProvider({ children }) {
     }
   }
 
-  const showToast = useCallback((msg) => {
-    playDing()
+  const showToast = useCallback((msg, { silent = false } = {}) => {
+    if (!silent) playDing()
     setToast(msg)
     clearTimeout(toastTimer.current)
     toastTimer.current = setTimeout(() => setToast(''), 6000)
@@ -129,7 +130,19 @@ export default function LiveSessionProvider({ children }) {
         ...c,
         [p.classId]: { total: c[p.classId]?.total ?? p.count, pending: p.count },
       }))
-      showToast(`📎 ${p.student?.name || 'A student'} submitted work in ${p.roomLabel} · ${p.trackLabel}`)
+      // A "heard in class" Yes arrives as a submission of kind verbal.
+      if ((p.kinds || []).includes('verbal')) {
+        once(`verbal-yes:${p.checkId || Date.now()}`, playConfirmed)
+        showToast(`🗣 ${p.student?.name || 'A student'} confirmed — explained in class, added for review`, { silent: true })
+      } else {
+        showToast(`📎 ${p.student?.name || 'A student'} submitted work in ${p.roomLabel} · ${p.trackLabel}`)
+      }
+      return
+    }
+    // The student said No to "heard in class" — nothing was recorded.
+    if (p?.type === 'verbal-check' && p.action === 'declined') {
+      once(`verbal-no:${p.checkId || Date.now()}`, playDeclined)
+      showToast(`🗣 ${p.student?.name || 'A student'} said No — nothing was recorded`, { silent: true })
       return
     }
     if (p?.type !== 'hand') return

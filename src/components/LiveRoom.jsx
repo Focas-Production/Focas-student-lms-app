@@ -9,6 +9,7 @@ import PipStage from './PipStage'
 import HostParticipantsPanel from './HostParticipantsPanel'
 import StudentMediaGuard from './StudentMediaGuard'
 import CameraRuleGuard from './CameraRuleGuard'
+import VerbalCheckGuard from './VerbalCheckGuard'
 import HostCameraAlerts from './HostCameraAlerts'
 import { usePictureInPicture, pickStageVideo } from '../hooks/usePictureInPicture'
 import BackgroundButton from './BackgroundButton'
@@ -1050,6 +1051,11 @@ function LiveRoomInner({
             handRaised={handRaised}
             onRemovalNotice={(info) => { removalReason.current = info }}
           />
+        )}
+        {/* "Heard in class": the mentor says this student explained their
+            work out loud — it counts only once the student confirms here. */}
+        {!canHost && timerClassId && (
+          <VerbalCheckGuard classId={timerClassId} onConfirmed={() => setSubmittedCount((n) => n + 1)} />
         )}
         {/* Hosts: the chimes for things they didn't do — a student removed by
             the camera rule, or one asking to be let back in. Mounted for the

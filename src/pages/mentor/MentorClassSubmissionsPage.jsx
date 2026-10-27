@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import { useLiveSession } from '../../components/LiveSessionProvider'
 import { SubmissionRow } from '../../components/SubmissionsModal'
+import { once, playConfirmed, playDeclined } from '../../utils/chime'
 
 // One class's submissions as a full PAGE (not a modal): every student who
 // joined the room, split into who has handed work in and who hasn't. Opened
@@ -22,6 +23,11 @@ import { SubmissionRow } from '../../components/SubmissionsModal'
 //     a second file doesn't shuffle the list under the reviewer.
 //   • Filters (all / to review / reviewed / not submitted) and, from six
 //     students up, a name/phone search.
+//
+// "Heard in class": while the class is live, the host can record work a
+// student explained out loud (no file). The student is asked on their own
+// screen and it only counts once they say yes — see HeardInClass below and
+// markVerbal/respondVerbal in the server's classSubmissionController.
 //
 // Kept fresh three ways while the class is live: a 15 s poll (new joiners come
 // from the LiveKit webhook), an immediate reload whenever the provider's
@@ -123,9 +129,25 @@ export default function MentorClassSubmissionsPage() {
   const [activeId, setActiveId] = useState(null)   // selected (laptop) / expanded (phone) student id
   const [refreshing, setRefreshing] = useState(false)
 
+  // "Heard in class" requests seen waiting, so the poll can ring when one gets
+  // its answer — a backup for a missed room push (both share once() keys, so
+  // a student's answer rings once on this page, not twice).
+  const pendingChecksRef = useRef(new Set())
   const load = useCallback(async () => {
     try {
       const d = await apiFetch(`${BASE}/${classId}/submissions/roster`)
+      const waiting = pendingChecksRef.current
+      for (const r of d.roster || []) {
+        const c = r.verbalCheck
+        if (!c) continue
+        const id = String(c._id)
+        if (c.state === 'pending') waiting.add(id)
+        else if (waiting.has(id)) {
+          waiting.delete(id)
+          if (c.state === 'declined') once(`verbal-no:${id}`, playDeclined)
+          else if (c.state === 'confirmed') once(`verbal-yes:${id}`, playConfirmed)
+        }
+      }
       setData(d)
       setError('')
     } catch (e) {
@@ -144,11 +166,14 @@ export default function MentorClassSubmissionsPage() {
   // Live class: poll so new joiners and fresh uploads appear on their own.
   // Skipped while the tab is hidden — nothing to show anyone then.
   const isLive = data?.class?.status === 'live'
+  // A "heard in class" request waiting on a student's answer → poll faster, so
+  // the yes/no shows up within seconds rather than at the next 15 s tick.
+  const waitingOnStudent = (data?.roster || []).some((r) => r.verbalCheck?.state === 'pending')
   useEffect(() => {
     if (!isLive) return undefined
-    const t = setInterval(() => { if (document.visibilityState === 'visible') load() }, 15_000)
+    const t = setInterval(() => { if (document.visibilityState === 'visible') load() }, waitingOnStudent ? 4_000 : 15_000)
     return () => clearInterval(t)
-  }, [isLive, load])
+  }, [isLive, load, waitingOnStudent])
 
   // Push: a student handing work in moves this class's pending count in the
   // provider (see LiveSessionProvider.onHandEvent) — reload right away rather
@@ -349,6 +374,10 @@ export default function MentorClassSubmissionsPage() {
             </div>
           </aside>
           <section className="min-w-0">
+            {selected && (
+              <HeardInClass key={`h-${selected.userId}`} row={selected} cls={cls} verbal={data?.verbal}
+                onChanged={load} onError={setError} />
+            )}
             {!selected ? (
               <div className="bg-white rounded-2xl shadow-sm p-8 text-center text-gray-400 text-sm">
                 Pick a student on the left.
@@ -384,21 +413,26 @@ export default function MentorClassSubmissionsPage() {
           {!rows.length ? nothingInFilter : (
             <div className="bg-white rounded-2xl shadow-sm p-3 space-y-2" style={{ colorScheme: 'light' }}>
               {rows.map((r) => r.submission ? (
-                <SubmissionRow
-                  key={r.userId}
-                  submission={r.submission}
-                  open={activeId === r.userId}
-                  onToggle={() => setActiveId(activeId === r.userId ? null : r.userId)}
-                  apiFetch={apiFetch}
-                  basePath={BASE}
-                  classId={classId}
-                  btn={BTN}
-                  onUpdated={patchRow}
-                  onError={setError}
-                  extraChips={<PresenceChip row={r} isLive={isLive} />}
-                />
+                <div key={r.userId}>
+                  <SubmissionRow
+                    submission={r.submission}
+                    open={activeId === r.userId}
+                    onToggle={() => setActiveId(activeId === r.userId ? null : r.userId)}
+                    apiFetch={apiFetch}
+                    basePath={BASE}
+                    classId={classId}
+                    btn={BTN}
+                    onUpdated={patchRow}
+                    onError={setError}
+                    extraChips={<PresenceChip row={r} isLive={isLive} />}
+                  />
+                  <HeardInClass compact row={r} cls={cls} verbal={data?.verbal} onChanged={load} onError={setError} />
+                </div>
               ) : (
-                <MissingRow key={r.userId} row={r} isLive={isLive} />
+                <div key={r.userId}>
+                  <MissingRow row={r} isLive={isLive} />
+                  <HeardInClass compact row={r} cls={cls} verbal={data?.verbal} onChanged={load} onError={setError} />
+                </div>
               ))}
             </div>
           )}
@@ -538,6 +572,134 @@ function MissingDetail({ row, isLive }) {
         {row.totalMs ? ` · ${fmtDur(row.totalMs)} in class` : ''}
         {row.sessionCount > 1 ? ` · ${row.sessionCount} joins` : ''}
       </p>
+    </div>
+  )
+}
+
+// ── "Heard in class" ─────────────────────────────────────────────────────────
+// The host records that this student explained their work out loud. Nothing
+// counts until the student taps "Yes" on their own screen; the server checks
+// that the class is live and the student is actually connected, both times.
+// Shows the latest request's state: waiting (with a countdown and Cancel),
+// said no, or didn't answer.
+
+const VERBAL_LABEL = {
+  declined:  { text: 'Said no to "heard in class"', cls: 'text-red-600' },
+  expired:   { text: "Didn't answer the confirmation in time", cls: 'text-gray-500' },
+  cancelled: { text: 'Request cancelled', cls: 'text-gray-400' },
+}
+
+function useSecondsLeft(until) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!until) return undefined
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [until])
+  return until ? Math.max(0, Math.round((new Date(until).getTime() - now) / 1000)) : 0
+}
+
+function HeardInClass({ row, cls, verbal, onChanged, onError, compact = false }) {
+  const [asking, setAsking] = useState(false)   // confirm box open
+  const [note, setNote]     = useState('')
+  const [busy, setBusy]     = useState(false)
+  const check = row.verbalCheck
+  const pending = check?.state === 'pending' ? check : null
+  const left = useSecondsLeft(pending?.expiresAt)
+
+  const open = !!verbal?.open
+  const spoken = (row.submission?.files || []).filter((f) => f.kind === 'verbal').length
+  const atLimit = verbal?.maxPerStudent != null && spoken >= verbal.maxPerStudent
+  const canMark = open && row.live && !pending && !atLimit
+  const recent = check && check.state !== 'pending' && check.state !== 'confirmed' && open ? VERBAL_LABEL[check.state] : null
+
+  if (!open && !compact) return null
+  if (compact && !pending && !canMark && !recent) return null
+
+  const chapter = cls?.chapter?.name || cls?.subject?.name || ''
+  const send = async () => {
+    setBusy(true)
+    try {
+      await apiFetch(`${BASE}/${cls._id}/submissions/verbal`, {
+        method: 'POST',
+        body: JSON.stringify({ studentId: row.userId, note: note.trim() }),
+      })
+      setAsking(false); setNote('')
+      await onChanged()
+    } catch (e) {
+      onError(e.message || 'Could not send')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const cancel = async () => {
+    setBusy(true)
+    try {
+      await apiFetch(`${BASE}/${cls._id}/submissions/verbal/${pending._id}`, { method: 'DELETE' })
+      await onChanged()
+    } catch (e) {
+      onError(e.message || 'Could not cancel')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const box = compact ? 'mt-1.5 rounded-xl px-3 py-2' : 'mb-3 rounded-2xl shadow-sm px-4 py-3'
+
+  if (pending) {
+    return (
+      <div className={`${box} bg-amber-50 border border-amber-200 flex items-center gap-2 flex-wrap text-xs text-amber-800`}>
+        <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse flex-shrink-0" />
+        <span className="flex-1 min-w-0">
+          Waiting for <b>{row.name || 'the student'}</b> to confirm on their screen…
+          {left > 0 ? ` ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}` : ''}
+        </span>
+        <button onClick={cancel} disabled={busy}
+          className="font-semibold underline disabled:opacity-50">Cancel</button>
+      </div>
+    )
+  }
+
+  if (asking) {
+    return (
+      <div className={`${box} bg-white border border-teal-200`}>
+        <p className="text-sm text-gray-800">
+          Mark that <b>{row.name || 'this student'}</b> explained {chapter ? <b>{chapter}</b> : 'their work'} to you out loud?
+        </p>
+        <p className="text-[11px] text-gray-500 mt-0.5">
+          They'll be asked to confirm on their screen. It counts as handed in only when they say yes.
+        </p>
+        <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500}
+          placeholder="Optional note (e.g. which question)"
+          className="mt-2 w-full text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-teal-400" />
+        <div className="flex justify-end gap-2 mt-2">
+          <button onClick={() => setAsking(false)} disabled={busy}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-100">Back</button>
+          <button onClick={send} disabled={busy}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold text-white ${BTN} disabled:opacity-50`}>
+            {busy ? 'Sending…' : 'Ask student to confirm'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={`${box} ${compact ? '' : 'bg-white'} flex items-center gap-2 flex-wrap`}>
+      {recent && <span className={`text-[11px] flex-1 min-w-0 ${recent.cls}`}>{recent.text} · {fmtTime(check.respondedAt)}</span>}
+      {!recent && !compact && (
+        <span className="text-[11px] text-gray-500 flex-1 min-w-0">
+          {!row.live ? 'Student must be in the room to mark work explained in class.'
+            : atLimit ? `This student has reached the limit of ${verbal.maxPerStudent} spoken entries.`
+            : 'Did they explain their work to you out loud?'}
+        </span>
+      )}
+      {canMark && (
+        <button onClick={() => setAsking(true)}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-teal-300 text-teal-700 hover:bg-teal-50 flex-shrink-0">
+          🗣 Heard in class
+        </button>
+      )}
     </div>
   )
 }

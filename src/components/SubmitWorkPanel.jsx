@@ -124,7 +124,7 @@ const fmtClock = (ms) => {
   const s = Math.floor((ms || 0) / 1000)
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
-const KIND_ICON = { audio: '🎙', video: '🎬', pdf: '📕', image: '🖼', doc: '📄', other: '📎' }
+const KIND_ICON = { audio: '🎙', video: '🎬', pdf: '📕', image: '🖼', doc: '📄', other: '📎', verbal: '🗣' }
 
 // PUT straight to R2 with progress. XHR rather than fetch because upload
 // progress is the whole point on a 200 MB video — a spinner with no percentage
@@ -417,6 +417,12 @@ export default function SubmitWorkPanel({
               </div>
             )}
 
+            {/* The mentor marked "heard in class" — same yes/no as the
+                in-room prompt, for when that was missed. */}
+            {data?.verbalPending && (
+              <VerbalPendingBox classId={classId} check={data.verbalPending} onDone={load} onError={setError} />
+            )}
+
             {/* Files the mentor sent back */}
             {!!submitted?.mentorFiles?.length && (
               <div className="mb-3">
@@ -440,19 +446,29 @@ export default function SubmitWorkPanel({
                 <p className="text-[11px] font-bold text-gray-400 uppercase mb-1.5">
                   Submitted ({attached}/{maxFiles})
                 </p>
-                <div className="space-y-1.5">
-                  {visibleSubmitted.map((f) => (
+                <div className="space-y-2.5">
+                  {visibleSubmitted.map((f, i) => (
                     // A file the mentor has graded on its own turns green and
                     // shows its marks; its feedback sits underneath. Graded
                     // files can't be removed (the server refuses too).
                     <div key={f.key} className={`rounded-xl border ${f.review ? 'border-emerald-200 bg-emerald-50/50' : 'border-gray-200 bg-gray-50'}`}>
                       <div className="flex items-center gap-2 px-3 py-2">
+                        {/* Numbered from the first file, even when older ones are folded away. */}
+                        <span className="text-[11px] font-bold text-gray-400 w-5 text-right flex-shrink-0">
+                          {submittedFiles.length - visibleSubmitted.length + i + 1}.
+                        </span>
                         <span>{KIND_ICON[f.kind] || '📎'}</span>
-                        <button onClick={() => openFile(f.key)} className="text-xs text-gray-900 font-medium truncate flex-1 text-left hover:underline">
-                          {f.name}
-                        </button>
+                        {f.kind === 'verbal' ? (
+                          // Explained to the mentor in class — nothing to open.
+                          <span className="text-xs text-gray-900 font-medium truncate flex-1">{f.name}</span>
+                        ) : (
+                          <button onClick={() => openFile(f.key)} className="text-xs text-gray-900 font-medium truncate flex-1 text-left hover:underline">
+                            {f.name}
+                          </button>
+                        )}
                         <span className="text-[10px] text-gray-400 flex-shrink-0">
-                          {f.durationMs ? fmtClock(f.durationMs) : fmtBytes(f.size)}
+                          {f.kind === 'verbal' ? 'Spoken in class'
+                            : f.durationMs ? fmtClock(f.durationMs) : fmtBytes(f.size)}
                         </span>
                         {f.review && (
                           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 flex-shrink-0"
@@ -462,12 +478,17 @@ export default function SubmitWorkPanel({
                               : 'Reviewed'}
                           </span>
                         )}
-                        {canSubmit && !locked && !f.review && (
+                        {canSubmit && !locked && !f.review && f.kind !== 'verbal' && (
                           <button onClick={() => removeSubmitted(f.key)} disabled={busy}
                             title="Remove this file"
                             className="text-gray-300 hover:text-red-500 text-lg leading-none disabled:opacity-40">×</button>
                         )}
                       </div>
+                      {f.kind === 'verbal' && f.verbal?.note && (
+                        <p className="mx-3 mb-2 -mt-0.5 px-2 py-1 rounded bg-amber-50 text-[11px] text-amber-900 whitespace-pre-wrap">
+                          <span className="font-semibold">Mentor's question:</span> {f.verbal.note}
+                        </p>
+                      )}
                       {f.review?.notes && (
                         <p className="px-3 pb-2 -mt-0.5 text-[11px] text-emerald-800 whitespace-pre-wrap">💬 {f.review.notes}</p>
                       )}
@@ -840,6 +861,46 @@ function RecorderBox({ mode, maxBytes, maxDurationMs, disabled, onDone, cameraCo
       )}
 
       {rec.error && <p className="text-xs text-red-500 mt-2">{rec.error}</p>}
+    </div>
+  )
+}
+
+// A "heard in class" request waiting on this student's answer. The in-room
+// prompt (VerbalCheckGuard) is the main way they see it; this is the fallback
+// inside the Submit work panel.
+function VerbalPendingBox({ classId, check, onDone, onError }) {
+  const [busy, setBusy] = useState(false)
+  const answer = async (confirm) => {
+    setBusy(true)
+    try {
+      await apiFetch(`/api/live-classes/${classId}/submissions/verbal/${check._id}/respond`, {
+        method: 'POST', body: JSON.stringify({ confirm }),
+      })
+    } catch (e) {
+      onError(e.message || 'Could not send your answer')
+    } finally {
+      setBusy(false)
+      onDone()
+    }
+  }
+  const what = [check.chapter?.name, check.unit?.name].filter(Boolean).join(' · ')
+  return (
+    <div className="mb-3 rounded-xl bg-teal-50 border border-teal-200 p-3">
+      <p className="text-xs text-teal-900">
+        🗣 <b>{check.markedBy?.name || 'Your mentor'}</b> says you explained {what ? <b>{what}</b> : 'your work'} out loud in class. Is that right?
+      </p>
+      {check.note && (
+        <p className="text-xs text-teal-900 mt-1"><span className="font-semibold">Question:</span> {check.note}</p>
+      )}
+      <p className="text-[11px] text-teal-700 mt-0.5">It counts as your submission only if you say yes.</p>
+      <div className="flex justify-end gap-2 mt-2">
+        <button onClick={() => answer(false)} disabled={busy}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-600 border border-gray-300 bg-white disabled:opacity-50">No</button>
+        <button onClick={() => answer(true)} disabled={busy}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-teal-600 hover:bg-teal-700 disabled:opacity-50">
+          {busy ? '…' : 'Yes, I did'}
+        </button>
+      </div>
     </div>
   )
 }

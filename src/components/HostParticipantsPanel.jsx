@@ -24,6 +24,9 @@ import { NOTIFY_TOPIC, canPublishSource } from '../utils/livekitPermissions'
 //               video: one click on the row while their countdown runs (they are
 //               usually asking out loud with seconds left), or from the ⋯ menu
 //               any time (see server/utils/cameraRule.js).
+//               ⋯ → "Heard in class": the student explained their work out
+//               loud; they're asked to confirm on their screen and it counts
+//               as handed in only if they say yes (server classSubmissionController).
 //
 // What each row shows comes from LiveKit itself (is the track muted? does the
 // participant still have permission for the source?), so it's right even when
@@ -89,11 +92,30 @@ export default function HostParticipantsPanel({ classId, hands = [], onClose }) 
     return () => { alive = false }
   }, [base, flash, applyCamRule])
 
+  // "Heard in class" requests this panel sent and is waiting on:
+  // identity → local deadline. Cleared by the student's answer (pushed back
+  // as a submission or a verbal-check "declined") or when time runs out.
+  const [verbalWaiting, setVerbalWaiting] = useState({})
+  const clearVerbal = useCallback((identity) => setVerbalWaiting((w) => {
+    if (!(identity in w)) return w
+    const n = { ...w }; delete n[identity]; return n
+  }), [])
+
   // Another host window (or this one) changed something — keep in step.
   useDataChannel(NOTIFY_TOPIC, (msg) => {
     let p
     try { p = JSON.parse(new TextDecoder().decode(msg.payload)) } catch { return }
     if (p.classId !== String(classId)) return
+    if (p.type === 'verbal-check' && p.action === 'declined' && p.student?.id) {
+      clearVerbal(p.student.id)
+      flash(`${p.student.name || 'The student'} said no — nothing was recorded.`)
+      return
+    }
+    if (p.type === 'submission' && (p.kinds || []).includes('verbal') && p.student?.id) {
+      clearVerbal(p.student.id)
+      flash(`${p.student.name || 'The student'} confirmed — added to their submissions.`)
+      return
+    }
     // The camera rule pushes on every change — a countdown starting, a student
     // complying, a removal — so this panel is the server's view, not a guess.
     if (p.type === 'camera-rule-state' && p.rule) { applyCamRule(p.rule); return }
@@ -141,6 +163,21 @@ export default function HostParticipantsPanel({ classId, hands = [], onClose }) 
     { method: 'POST', body: JSON.stringify({ approve }) },
   )
 
+  // ── "Heard in class" ──
+  const askVerbal = useCallback(async (p) => {
+    setMenuFor(null)
+    const name = p.name || p.identity
+    if (!window.confirm(`Mark that ${name} explained their work to you out loud?\n\nThey'll be asked to confirm on their screen. It counts as handed in only when they say yes.`)) return
+    const d = await run(`verbal:${p.identity}`, `${base}/submissions/verbal`,
+      { method: 'POST', body: JSON.stringify({ studentId: p.identity }) })
+    if (d?.check) {
+      const at = Date.now()
+      const until = at + (d.check.expiresInMs || 0)
+      setVerbalWaiting((w) => ({ ...w, [p.identity]: until }))
+      setNow(at)
+    }
+  }, [run, base])
+
   // ── "camera must be on" ──
   const toggleCameraRule = (enabled) => run(
     'camera-rule', `${base}/camera-rule`,
@@ -165,11 +202,20 @@ export default function HostParticipantsPanel({ classId, hands = [], onClose }) 
     () => new Map((camRule?.pending || []).map((x) => [x.userId, camAt + x.endsInMs])),
     [camRule, camAt],
   )
+  const verbalCount = Object.keys(verbalWaiting).length
   useEffect(() => {
-    if (!camDeadlines.size && !waitingCount) return undefined
-    const id = setInterval(() => setNow(Date.now()), 1000)
+    if (!camDeadlines.size && !waitingCount && !verbalCount) return undefined
+    const id = setInterval(() => {
+      const t = Date.now()
+      setNow(t)
+      // Unanswered "heard in class" requests lapse on the server; drop them here too.
+      setVerbalWaiting((w) => {
+        const live = Object.entries(w).filter(([, at]) => at > t)
+        return live.length === Object.keys(w).length ? w : Object.fromEntries(live)
+      })
+    }, 1000)
     return () => clearInterval(id)
-  }, [camDeadlines, waitingCount])
+  }, [camDeadlines, waitingCount, verbalCount])
 
   const camEnabled = !!camRule?.enabled
   const camExempt = new Set((camRule?.exempt || []).map((e) => e.userId))
@@ -272,6 +318,9 @@ export default function HostParticipantsPanel({ classId, hands = [], onClose }) 
             now={now}
             camStrikes={camStrikes[p.identity] || 0}
             onExempt={(exempt) => setExempt(p, exempt)}
+            verbalEndsAt={verbalWaiting[p.identity] || null}
+            verbalBusy={!!busy[`verbal:${p.identity}`]}
+            onHeard={() => askVerbal(p)}
           />
         ))}
 
@@ -436,6 +485,7 @@ export default function HostParticipantsPanel({ classId, hands = [], onClose }) 
 function StudentRow({
   p, handUp, busy, menuOpen, onMenu, onControl, onRemove,
   camRuleOn, camExempt, camEndsAt, camStrikes, onExempt, now,
+  verbalEndsAt, verbalBusy, onHeard,
 }) {
   const micMuted = useIsMuted({ participant: p, source: Track.Source.Microphone })
   const camMuted = useIsMuted({ participant: p, source: Track.Source.Camera })
@@ -452,6 +502,7 @@ function StudentRow({
   // the server has already stopped the clock for anyone excused.
   const camCounting = camRuleOn && !camExempt && camMuted && camEndsAt != null
   const camLeft = camCounting ? Math.max(0, camEndsAt - now) : 0
+  const verbalLeft = verbalEndsAt ? Math.max(0, verbalEndsAt - now) : 0
 
   // Primary mic button: the one thing a host most likely wants right now.
   const mic = !micMuted
@@ -487,6 +538,12 @@ function StudentRow({
               style={{ background: '#dc2626', color: '#fff', fontSize: 10, fontWeight: 800, padding: '1px 7px', borderRadius: 999, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}
             >
               📷 {camLeft > 0 ? fmtClock(camLeft) : 'removing…'}
+            </span>
+          )}
+          {verbalLeft > 0 && (
+            <span title="Waiting for them to confirm on their screen that they explained their work"
+              style={{ background: 'rgba(20,184,166,0.25)', color: '#5eead4', fontSize: 10, fontWeight: 800, padding: '1px 7px', borderRadius: 999, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+              🗣 {fmtClock(verbalLeft)}
             </span>
           )}
           {camExempt && (
@@ -563,6 +620,9 @@ function StudentRow({
               {camExempt ? '📷 Require their camera again' : '🆘 Excuse from the camera rule'}
             </MenuItem>
           )}
+          <MenuItem onClick={onHeard} disabled={verbalBusy || verbalLeft > 0}>
+            🗣 Heard in class — ask them to confirm
+          </MenuItem>
           <div style={{ height: 1, background: 'rgba(255,255,255,0.1)', margin: '4px 2px' }} />
           <MenuItem onClick={onRemove} danger>⛔ Remove from class</MenuItem>
         </div>
