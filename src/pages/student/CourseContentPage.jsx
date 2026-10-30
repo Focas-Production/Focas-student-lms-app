@@ -47,6 +47,53 @@ function fmtTime(sec) {
   return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`
 }
 
+// ── Unsaved watch time, mirrored to localStorage while a lecture plays ──
+// If the tab, browser or machine dies before a save goes out, the next visit
+// sends what was left. The copy is removed the moment a save is sent, so no
+// second is ever counted twice. Keys are per player instance (two tabs on one
+// lecture don't overwrite each other), and a key is only swept once it has
+// stopped being refreshed — a tab that is still playing keeps its own.
+const PENDING_PREFIX   = 'vp-pending:'
+const PENDING_EVERY_MS = 5 * 1000    // refresh cadence while playing
+const PENDING_STALE_MS = 60 * 1000   // older than this = its tab is gone
+
+function writePending(key, data) {
+  try { localStorage.setItem(key, JSON.stringify({ ...data, t: Date.now() })) } catch { /* private mode / storage full */ }
+}
+function dropPending(key) {
+  try { localStorage.removeItem(key) } catch { /* storage unavailable */ }
+}
+
+let leftoversSwept = false
+function sendLeftoverWatchTime(again = false) {
+  if (leftoversSwept && !again) return
+  leftoversSwept = true
+  let keys
+  try { keys = Object.keys(localStorage).filter((k) => k.startsWith(PENDING_PREFIX)) } catch { return }
+  let fresh = false
+  for (const key of keys) {
+    let p = null
+    try { p = JSON.parse(localStorage.getItem(key)) } catch { /* corrupt → drop */ }
+    if (p && Date.now() - (p.t || 0) < PENDING_STALE_MS) { fresh = true; continue }
+    dropPending(key)
+    const playedDelta = Math.floor(p?.d || 0)
+    if (!p?.contentId || playedDelta < 1) continue
+    // played seconds only: the position may be older than a later save
+    apiFetch('/api/purchase/progress', {
+      method: 'POST', keepalive: true,
+      body: JSON.stringify({ contentId: p.contentId, productId: p.productId, playedDelta }),
+    }).catch((e) => {
+      // offline (no HTTP status): keep it for the next visit; an HTTP error
+      // means the server answered, so it is not retried (never counted twice)
+      if (!e?.status) writePending(`${PENDING_PREFIX}${p.contentId}:retry-${Math.random().toString(36).slice(2, 8)}`, { contentId: p.contentId, productId: p.productId, d: playedDelta })
+    })
+  }
+  // Still-fresh copies: another open tab, or a crash moments ago. Look again
+  // once they would have gone stale — a live tab keeps refreshing (or saves
+  // and drops) its own, so only a dead one's is picked up.
+  if (fresh) setTimeout(() => sendLeftoverWatchTime(true), PENDING_STALE_MS + 1000)
+}
+
 function VideoItem({ item, productId, initialProgress }) {
   const [open,       setOpen]      = useState(false)
   const [streamUrl,  setStreamUrl] = useState(null)
@@ -58,6 +105,14 @@ function VideoItem({ item, productId, initialProgress }) {
   const iframeRef   = useRef(null)
   const seekDoneRef = useRef(false)
   const lastPos     = initialProgress?.lastPosition || 0
+  const playedRef   = useRef(0)       // played since the last save
+  const lastSecRef  = useRef(null)    // previous playback position; null after a seek
+  const posRef      = useRef(lastPos) // current playback position
+  const sentPosRef  = useRef(lastPos) // position the server already has
+  const pendingKey  = useRef(null)    // this player's localStorage copy (see writePending)
+  const persistedAt = useRef(0)
+
+  useEffect(() => { sendLeftoverWatchTime() }, [])
 
   useEffect(() => () => {
     if (cachedRef.current?.startsWith('blob:')) URL.revokeObjectURL(cachedRef.current)
@@ -86,58 +141,103 @@ function VideoItem({ item, productId, initialProgress }) {
 
   function doSeek() {
     const v = videoRef.current
-    if (!v || seekDoneRef.current || lastPos < 5) return
-    v.currentTime = lastPos
+    const at = posRef.current || 0   // this visit's position if they reopened
+    if (!v || seekDoneRef.current || at < 5) return
+    v.currentTime = at
     seekDoneRef.current = true
   }
 
-  const savePos = useCallback(async (position, token, watched) => {
-    const lastPosition   = Math.floor(position || 0)
-    const watchedSeconds = Math.floor(watched ?? watchedRef.current)
-    if (lastPosition < 1 && watchedSeconds < 1) return
-    watchedRef.current = Math.max(watchedRef.current, watchedSeconds)
-    const body = JSON.stringify({ contentId: item._id, productId, lastPosition, watchedSeconds: watchedRef.current })
-    if (token) {
-      fetch(`${import.meta.env.VITE_API_BASE}/api/purchase/progress`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': 'true' },
-        body, keepalive: true,
-      }).catch(() => {})
-    } else {
-      apiFetch('/api/purchase/progress', { method: 'POST', body }).catch(() => {})
+  // Exact watch time: only seconds that actually played count. A jump of more
+  // than a few seconds between two time updates is a seek, not watching. The
+  // played seconds pile up in playedRef and go to the server as a delta on
+  // pause / end / close / tab hidden or closed, plus every 5 min while open —
+  // few writes; a crash in between is covered by the localStorage copy.
+
+  const flush = useCallback(() => {
+    const playedDelta  = Math.floor(playedRef.current)
+    const lastPosition = Math.floor(posRef.current || 0)
+    // nothing played and no new position → no write
+    if (playedDelta < 1 && lastPosition === sentPosRef.current) return
+    sentPosRef.current = lastPosition
+    playedRef.current -= playedDelta
+    if (pendingKey.current) dropPending(pendingKey.current)   // before sending: never twice
+    persistedAt.current = 0
+    const body = JSON.stringify({ contentId: item._id, productId, lastPosition, watchedSeconds: Math.floor(watchedRef.current), playedDelta })
+    // keepalive: this also runs while the page is closing. Offline (no HTTP
+    // status) → the seconds go back to be sent with the next save; an HTTP
+    // error means the server answered, so nothing is re-sent.
+    apiFetch('/api/purchase/progress', { method: 'POST', body, keepalive: true })
+      .catch((e) => { if (!e?.status) playedRef.current += playedDelta })
+  }, [item._id, productId])
+
+  const tick = useCallback((sec) => {
+    if (!(sec >= 0)) return
+    const prev = lastSecRef.current
+    if (prev != null) {
+      const d = sec - prev
+      if (d > 0 && d <= 3) playedRef.current += d
+    }
+    lastSecRef.current = sec
+    posRef.current = sec
+    watchedRef.current = Math.max(watchedRef.current, Math.floor(sec))
+    if (playedRef.current >= 1 && Date.now() - persistedAt.current >= PENDING_EVERY_MS) {
+      if (!pendingKey.current) pendingKey.current = `${PENDING_PREFIX}${item._id}:${Math.random().toString(36).slice(2, 10)}`
+      persistedAt.current = Date.now()
+      writePending(pendingKey.current, { contentId: item._id, productId, d: playedRef.current })
     }
   }, [item._id, productId])
 
+  // Bunny's iframe speaks player.js (embed has api=true). Its receiver only
+  // starts after the video's first data loads, so wait for its "ready" before
+  // subscribing; then it reports the real position ~4 times a second.
   useEffect(() => {
     if (!open || !streamUrl?.includes('iframe.mediadelivery.net')) return
-    const openedAt = Date.now()
-    return () => {
-      const elapsed = Math.floor((Date.now() - openedAt) / 1000)
-      const watched = Math.max(elapsed, watchedRef.current)
-      if (watched > 5) { watchedRef.current = watched; savePos(0, null, watched) }
-    }
-  }, [open, streamUrl, savePos])
-
-  useEffect(() => {
-    function onVisibilityChange() {
-      if (!document.hidden) return
-      const v = videoRef.current
-      if (v && v.currentTime > 1) {
-        savePos(v.currentTime, localStorage.getItem('student_token'))
-      } else if (watchedRef.current > 1) {
-        savePos(0, null, watchedRef.current)
+    const send = (msg) => iframeRef.current?.contentWindow?.postMessage(
+      JSON.stringify({ context: 'player.js', version: '0.0.11', ...msg }), '*')
+    let resumed = false
+    function onMessage(e) {
+      if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return
+      let d = e.data
+      if (typeof d === 'string') { try { d = JSON.parse(d) } catch { return } }
+      if (d?.context !== 'player.js') return
+      if (d.event === 'ready') {
+        for (const ev of ['timeupdate', 'seeked', 'pause', 'ended']) send({ method: 'addEventListener', value: ev, listener: ev })
+        // resume where they last stopped (this visit's position if they reopened)
+        const at = Math.floor(posRef.current || 0)
+        if (!resumed && at >= 5) { resumed = true; send({ method: 'setCurrentTime', value: at }) }
       }
+      else if (d.event === 'timeupdate') tick(d.value?.seconds)
+      else if (d.event === 'seeked') lastSecRef.current = d.value?.seconds ?? null
+      else if (d.event === 'pause' || d.event === 'ended') flush()
     }
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [savePos])
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [open, streamUrl, flush, tick])
 
-  function handleTimeUpdate() {
-    const v = videoRef.current
-    if (v) watchedRef.current = Math.max(watchedRef.current, Math.floor(v.currentTime))
-  }
-  function handlePause() { const v = videoRef.current; if (v) savePos(v.currentTime, null) }
-  function handleEnded() { const v = videoRef.current; savePos(v?.duration || lastPos, null) }
+  // While a player is open: safety save every 5 min, and a final one on close.
+  useEffect(() => {
+    if (!open) return
+    const iv = setInterval(flush, 5 * 60 * 1000)
+    return () => { clearInterval(iv); lastSecRef.current = null; flush() }
+  }, [open, flush])
+
+  // Tab hidden / minimised, or the tab being closed or navigated away
+  // (pagehide is the one browsers reliably fire on close).
+  useEffect(() => {
+    if (!open) return
+    function onVisibilityChange() { if (document.hidden) flush() }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pagehide', flush)
+    }
+  }, [open, flush])
+
+  function handleTimeUpdate() { const v = videoRef.current; if (v) tick(v.currentTime) }
+  function handleSeeking()    { lastSecRef.current = null }
+  function handlePause()      { flush() }
+  function handleEnded()      { flush() }
 
   const resumeLabel = lastPos >= 5 ? `Resume ${fmtTime(lastPos)}` : null
   const watchedMin  = watchedRef.current > 60 ? Math.round(watchedRef.current / 60) : null
@@ -192,7 +292,7 @@ function VideoItem({ item, productId, initialProgress }) {
                 disablePictureInPicture
                 onContextMenu={e => e.preventDefault()}
                 onLoadedMetadata={doSeek} onCanPlay={doSeek}
-                onTimeUpdate={handleTimeUpdate} onPause={handlePause} onEnded={handleEnded}>
+                onTimeUpdate={handleTimeUpdate} onSeeking={handleSeeking} onPause={handlePause} onEnded={handleEnded}>
                 Your browser does not support the video tag.
               </video>
             </div>
