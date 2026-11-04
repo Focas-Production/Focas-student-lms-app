@@ -1,6 +1,7 @@
 import { Outlet, NavLink } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import StudentLiveSessionProvider from '../components/StudentLiveSessionProvider'
+import DetailsReminder from '../components/DetailsReminder'
 
 const NAV = [
   {
@@ -96,6 +97,9 @@ export default function StudentLayout() {
             {user?.name?.[0]?.toUpperCase() || (user?.phoneNumber || '?').slice(-1)}
           </NavLink>
         </header>
+
+        {/* Foundation students only: banner + once-per-open pop-up until My Details is done. */}
+        <DetailsReminder />
 
         <main className="flex-1 overflow-y-auto pt-5 md:pt-0">
           <Outlet />

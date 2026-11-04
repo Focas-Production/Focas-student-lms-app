@@ -15,6 +15,7 @@ import TestSeriesPage from '../pages/student/TestSeriesPage'
 import AiPracticePage from '../pages/student/AiPracticePage'
 import LiveClassesPage from '../pages/student/LiveClassesPage'
 import ProgressPage from '../pages/student/ProgressPage'
+import MyDetailsPage from '../pages/student/MyDetailsPage'
 
 import MentorDashboard from '../pages/mentor/MentorDashboard'
 import MyStudentsPage from '../pages/mentor/MyStudentsPage'
@@ -61,6 +62,7 @@ export default function AppRouter() {
         <Route path="ai-practice" element={<AiPracticePage />} />
         <Route path="explore" element={<ExplorePage />} />
         <Route path="profile" element={<ProfilePage />} />
+        <Route path="details" element={<MyDetailsPage />} />
       </Route>
 
       {/* Mentor routes */}

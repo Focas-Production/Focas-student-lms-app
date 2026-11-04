@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext'
 import { apiFetch } from '../../api'
+import { STATUS_TEXT } from '../../lib/studentDetails'
 
 function getInitials(user) {
   if (user.name) return user.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
@@ -18,10 +19,14 @@ export default function ProfilePage() {
   const [saving,   setSaving]   = useState(false)
   const [error,    setError]    = useState('')
   const [purchases, setPurchases] = useState([])
+  const [details, setDetails] = useState(null)   // admission details (Foundation only)
 
   useEffect(() => {
     apiFetch('/api/purchase/my-purchases')
       .then(d => setPurchases(d.purchases || []))
+      .catch(() => {})
+    apiFetch('/api/student-details/me')
+      .then(d => setDetails(d.details?.required ? d.details : null))
       .catch(() => {})
   }, [])
 
@@ -153,6 +158,17 @@ export default function ProfilePage() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Admission details — Foundation students */}
+      {details && (
+        <Link to="/student/details" className="flex items-center justify-between bg-white rounded-2xl shadow-sm mb-4 px-4 py-3.5">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">My Details</p>
+            <p className="text-xs text-gray-400">{STATUS_TEXT[details.status]}</p>
+          </div>
+          <span className="text-indigo-600 text-sm font-semibold">Open →</span>
+        </Link>
       )}
 
       {/* Logout */}
