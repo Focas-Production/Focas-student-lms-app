@@ -176,34 +176,98 @@ export default function SubmissionsModal({
   )
 }
 
+// ── Review validation ──
+// Same limits the server enforces (server/controllers/classSubmissionController.js
+// parseMarks / reviewSubmission / reviewSubmissionFile) — checked here first so
+// the reason shows next to the field instead of after a failed save.
+const MAX_TOTAL_MARKS   = 1000
+const MAX_OVERALL_NOTES = 4000
+const MAX_FILE_NOTES    = 2000
+const MIN_CHANGES_NOTE  = 5
+const MAX_REVIEW_FILES  = 5
+
+// What a marks box accepts while typing: up to 4 digits, one dot, 2 decimals.
+// A minus sign, "e" or letters simply don't go in.
+const NUM_TYPING = /^\d{0,4}(\.\d{0,2})?$/
+const acceptNum = (v) => {
+  const t = String(v).replace(',', '.').trim()
+  return NUM_TYPING.test(t) ? t : null
+}
+const str = (v) => (v == null ? '' : String(v))
+const round2 = (n) => Math.round(n * 100) / 100
+// Is the typed text the same NUMBER as the saved value? "7.50" over a saved 7.5
+// is not an unsaved change.
+const sameNum = (txt, v) => (txt === '' ? v == null : v != null && Number(txt) === Number(v))
+
+// Problems with a marks / "out of" pair → { marks?, total? }.
+// `finishing`: the score becomes final, where "out of" without marks isn't allowed.
+function validateMarks(marks, total, { finishing = false } = {}) {
+  const errs = {}
+  const m = marks === '' ? null : Number(marks)
+  const t = total === '' ? null : Number(total)
+  if (m != null && !Number.isFinite(m)) errs.marks = 'Marks must be a number'
+  if (t != null) {
+    if (!Number.isFinite(t)) errs.total = '"Out of" must be a number'
+    else if (t <= 0) errs.total = '"Out of" must be more than 0'
+    else if (t > MAX_TOTAL_MARKS) errs.total = `"Out of" can be at most ${MAX_TOTAL_MARKS}`
+  }
+  if (!errs.marks && !errs.total) {
+    if (m != null && t == null) errs.total = 'Enter what the marks are out of'
+    else if (m != null && m > t) errs.marks = `Marks can't be more than ${t}`
+    else if (finishing && t != null && m == null) errs.marks = 'Enter the marks, or clear "out of"'
+  }
+  return errs
+}
+
+const inputCls = (err, w = 'w-20') => `mt-0.5 ${w} text-sm text-gray-900 bg-white border rounded-lg px-2 py-1.5 focus:outline-none ${
+  err ? 'border-red-400 focus:border-red-500' : 'border-gray-200 focus:border-teal-400'}`
+
 // One student's submission: a collapsed header row that expands into the files
 // (inline audio/video, open-in-tab for the rest), the student's note and the
 // review form. Exported so the per-class submissions PAGE
 // (pages/mentor/MentorClassSubmissionsPage.jsx) renders the exact same row as
 // this modal — one reviewed implementation, not two drifting copies.
-//   extraChips — optional nodes shown beside the status chip (e.g. "in room").
-//   standalone — always expanded, header not a toggle (the page's detail pane).
+//   extraChips    — optional nodes shown beside the status chip (e.g. "in room").
+//   standalone    — always expanded, header not a toggle (the page's detail pane).
+//   onDirtyChange — (submissionId, bool) unsaved typing, so the page can warn
+//                   before switching student / leaving.
+//   onNotice      — (message) after a successful save, for a page-level toast.
 export function SubmissionRow({
-  submission: s, open, onToggle, apiFetch, basePath, classId, btn, onUpdated, onError,
-  extraChips = null, standalone = false,
+  submission: s, open, onToggle, apiFetch, basePath, classId, btn, onUpdated,
+  onDirtyChange, onNotice, extraChips = null, standalone = false,
 }) {
   const isOpen = standalone || open
   const Header = standalone ? 'div' : 'button'
-  const [marks, setMarks]         = useState(s.marks ?? '')
-  const [totalMarks, setTotal]    = useState(s.totalMarks ?? '')
+  const [marks, setMarks]         = useState(str(s.marks))
+  const [totalMarks, setTotal]    = useState(str(s.totalMarks))
   const [notes, setNotes]         = useState(s.mentorNotes || '')
   const [saving, setSaving]       = useState(false)
   const [preview, setPreview]     = useState(null)  // { key, url, kind, name }
   const [uploading, setUploading] = useState(false)
+  const [touched, setTouched]     = useState(false) // show marks errors after blur / a save attempt
+  const [formError, setFormError] = useState('')
+  const [notesError, setNotesError] = useState('')
+  const [fileError, setFileError] = useState('')
+  const [notice, setNotice]       = useState('')
+  const [confirmBare, setConfirmBare] = useState(false)
   // Keys of files whose own review form is open. A Set, not one key: a
   // reviewer may grade two files side by side without losing typed marks.
   const [openFiles, setOpenFiles] = useState(() => new Set())
+  // Keys of open file forms holding unsaved typing.
+  const [dirtyFiles, setDirtyFiles] = useState(() => new Set())
   const toggleFileReview = (key) => setOpenFiles((prev) => {
     const next = new Set(prev)
     if (next.has(key)) next.delete(key); else next.add(key)
     return next
   })
+  const markFileDirty = useCallback((key, dirty) => setDirtyFiles((prev) => {
+    if (prev.has(key) === dirty) return prev
+    const next = new Set(prev)
+    if (dirty) next.add(key); else next.delete(key)
+    return next
+  }), [])
   const fileRef = useRef(null)
+  const notesRef = useRef(null)
 
   // Adopt server values only when the SERVER's copy actually changed — not on
   // every re-render of this row.
@@ -216,22 +280,35 @@ export function SubmissionRow({
   const lastServer = useRef({ marks: s.marks, totalMarks: s.totalMarks, mentorNotes: s.mentorNotes })
   useEffect(() => {
     const prev = lastServer.current
-    if (prev.marks !== s.marks)             setMarks(s.marks ?? '')
-    if (prev.totalMarks !== s.totalMarks)   setTotal(s.totalMarks ?? '')
+    if (prev.marks !== s.marks)             setMarks(str(s.marks))
+    if (prev.totalMarks !== s.totalMarks)   setTotal(str(s.totalMarks))
     if (prev.mentorNotes !== s.mentorNotes) setNotes(s.mentorNotes || '')
     lastServer.current = { marks: s.marks, totalMarks: s.totalMarks, mentorNotes: s.mentorNotes }
   }, [s.marks, s.totalMarks, s.mentorNotes])
 
+  const dirty = !sameNum(marks, s.marks) || !sameNum(totalMarks, s.totalMarks)
+    || notes.trim() !== (s.mentorNotes || '').trim() || dirtyFiles.size > 0
+  useEffect(() => { onDirtyChange?.(s._id, dirty) }, [onDirtyChange, s._id, dirty])
+  useEffect(() => () => onDirtyChange?.(s._id, false), [onDirtyChange, s._id])
+
+  useEffect(() => {
+    if (!notice) return undefined
+    const t = setTimeout(() => setNotice(''), 5000)
+    return () => clearTimeout(t)
+  }, [notice])
+
   const chip = STATUS_CHIP[s.status] || STATUS_CHIP.submitted
+  const marksErrs = touched ? validateMarks(marks, totalMarks) : {}
 
   // Per-file grading rolled up: how many pieces are done, and what the marks
   // add up to — offered as the overall score with one click ("Use total").
   const gradedFiles = s.files.filter((f) => f.review)
   const markedFiles = gradedFiles.filter((f) => f.review.marks != null)
-  const filesMarks  = markedFiles.reduce((a, f) => a + f.review.marks, 0)
+  const filesMarks  = round2(markedFiles.reduce((a, f) => a + f.review.marks, 0))
   const filesTotal  = markedFiles.length && markedFiles.every((f) => f.review.totalMarks != null)
-    ? markedFiles.reduce((a, f) => a + f.review.totalMarks, 0) : null
+    ? round2(markedFiles.reduce((a, f) => a + f.review.totalMarks, 0)) : null
   const allGraded = s.files.length > 0 && gradedFiles.length === s.files.length
+  const anyFileFeedback = gradedFiles.some((f) => f.review.marks != null || f.review.notes)
 
   // What the student confirmed this submission is for — shown on the row so the
   // reviewer can tell the chapter at a glance.
@@ -258,6 +335,7 @@ export function SubmissionRow({
   // Audio and video play inline — a mentor reviewing 30 voice notes shouldn't
   // have to open 30 browser tabs. Everything else opens in a new tab.
   const openFile = async (f) => {
+    setFileError('')
     try {
       if (f.kind === 'audio' || f.kind === 'video') {
         if (preview?.key === f.key) { setPreview(null); return }
@@ -268,35 +346,64 @@ export function SubmissionRow({
         window.open(d.url, '_blank', 'noopener')
       }
     } catch (e) {
-      onError?.(e.message || 'Could not open the file')
+      setFileError(`Couldn't open "${f.name}". ${e.message || 'Try again.'}`)
     }
   }
 
   const download = async (f) => {
+    setFileError('')
     try {
       const d = await fileUrl(f.key, true)
       window.open(d.url, '_blank', 'noopener')
     } catch (e) {
-      onError?.(e.message || 'Could not download the file')
+      setFileError(`Couldn't download "${f.name}". ${e.message || 'Try again.'}`)
     }
   }
 
-  const save = async (status) => {
+  // status: 'reviewed' | 'changes_requested' | null (draft)
+  const save = async (status, { skipBareCheck = false } = {}) => {
+    if (saving || uploading) return
+    setFormError(''); setNotesError(''); setNotice('')
+    setTouched(true)
+    const errs = validateMarks(marks, totalMarks, { finishing: status === 'reviewed' })
+    if (errs.marks || errs.total) { setFormError(errs.marks || errs.total); return }
+    const cleanNotes = notes.trim()
+    if (status === 'changes_requested' && cleanNotes.length < MIN_CHANGES_NOTE) {
+      setNotesError('Write what the student should change — they will see this.')
+      notesRef.current?.focus()
+      return
+    }
+    if (status && dirtyFiles.size) {
+      const names = s.files.filter((f) => dirtyFiles.has(f.key)).map((f) => `"${f.name}"`).join(', ')
+      setFormError(`Marks typed for ${names} are not saved yet — press Save on that file, or Cancel.`)
+      return
+    }
+    if (status === 'reviewed' && !skipBareCheck && marks === '' && !cleanNotes && !anyFileFeedback && !s.mentorFiles.length) {
+      setConfirmBare(true)
+      return
+    }
+    setConfirmBare(false)
     setSaving(true)
-    onError?.('')
     try {
       const d = await apiFetch(`${basePath}/${classId}/submissions/${s._id}/review`, {
         method: 'POST',
         body: JSON.stringify({
           marks: marks === '' ? null : Number(marks),
           totalMarks: totalMarks === '' ? null : Number(totalMarks),
-          mentorNotes: notes,
+          mentorNotes: cleanNotes,
           ...(status ? { status } : {}),
         }),
       })
+      const who = s.studentName || 'the student'
+      const msg = status === 'reviewed' ? `Marked reviewed — ${who} can see it now.`
+        : status === 'changes_requested' ? `Sent back to ${who} for changes.`
+          : 'Draft saved.'
+      setTouched(false)
+      setNotice(msg)
+      onNotice?.(msg)
       onUpdated(d.submission)
     } catch (e) {
-      onError?.(e.message || 'Could not save the review')
+      setFormError(e.message || 'Could not save the review. Check your internet and try again.')
     } finally {
       setSaving(false)
     }
@@ -307,8 +414,12 @@ export function SubmissionRow({
   const uploadCorrected = async (fileList) => {
     const files = Array.from(fileList || [])
     if (!files.length) return
+    setFormError('')
+    if (s.mentorFiles.length + files.length > MAX_REVIEW_FILES) {
+      setFormError(`You can attach at most ${MAX_REVIEW_FILES} corrected files.`)
+      return
+    }
     setUploading(true)
-    onError?.('')
     try {
       const { uploads } = await apiFetch(`${basePath}/${classId}/submissions/${s._id}/presign-review`, {
         method: 'POST',
@@ -320,7 +431,7 @@ export function SubmissionRow({
           headers: files[i].type ? { 'Content-Type': files[i].type } : {},
           body: files[i],
         })
-        if (!res.ok) throw new Error(`Upload failed (${res.status})`)
+        if (!res.ok) throw new Error(`Upload of "${files[i].name}" failed (${res.status})`)
       }
       const d = await apiFetch(`${basePath}/${classId}/submissions/${s._id}/review`, {
         method: 'POST',
@@ -330,7 +441,7 @@ export function SubmissionRow({
       })
       onUpdated(d.submission)
     } catch (e) {
-      onError?.(e.message || 'Could not upload the file')
+      setFormError(e.message || 'Could not upload the file')
     } finally {
       setUploading(false)
     }
@@ -338,15 +449,18 @@ export function SubmissionRow({
 
   const removeCorrected = async (key) => {
     if (!confirm('Remove this file?')) return
+    setFormError('')
     try {
       const d = await apiFetch(`${basePath}/${classId}/submissions/${s._id}/review-file`, {
         method: 'DELETE', body: JSON.stringify({ key }),
       })
       onUpdated(d.submission)
     } catch (e) {
-      onError?.(e.message || 'Could not remove the file')
+      setFormError(e.message || 'Could not remove the file')
     }
   }
+
+  const busy = saving || uploading
 
   return (
     <div className={`rounded-xl overflow-hidden ${standalone ? '' : `border ${open ? 'border-gray-300' : 'border-gray-200'}`}`}>
@@ -392,7 +506,7 @@ export function SubmissionRow({
           {s.note && (
             <div className="mt-3 rounded-lg bg-white border border-gray-200 p-2.5">
               <p className="text-[10px] font-bold text-gray-400 uppercase mb-0.5">Student's note</p>
-              <p className="text-xs text-gray-700 whitespace-pre-wrap">{s.note}</p>
+              <p className="text-xs text-gray-700 whitespace-pre-wrap [overflow-wrap:anywhere]">{s.note}</p>
             </div>
           )}
 
@@ -403,6 +517,7 @@ export function SubmissionRow({
                 <p className="text-[10px] text-gray-400">Each file can be graded on its own</p>
               )}
             </div>
+            {fileError && <p role="alert" className="text-[11px] text-red-600 mb-1.5">⚠ {fileError}</p>}
             {/* Numbered and spaced, so "the 2nd photo" is easy to point at
                 and a spoken item with its question reads as one block. */}
             <div className="space-y-3">
@@ -419,7 +534,8 @@ export function SubmissionRow({
                         {f.name}
                       </span>
                     ) : (
-                      <button onClick={() => openFile(f)} className="text-xs text-gray-900 font-medium truncate flex-1 text-left hover:underline">
+                      <button onClick={() => openFile(f)} className="text-xs text-gray-900 font-medium truncate flex-1 text-left hover:underline"
+                        title={f.kind === 'audio' || f.kind === 'video' ? 'Play' : 'Open in a new tab'}>
                         {f.name}
                       </button>
                     )}
@@ -483,7 +599,7 @@ export function SubmissionRow({
                   {/* Saved feedback stays readable under the file; the form
                       replaces it while open. */}
                   {f.review?.notes && !openFiles.has(f.key) && (
-                    <p className="mt-1 ml-6 text-[11px] text-emerald-800 whitespace-pre-wrap">💬 {f.review.notes}</p>
+                    <p className="mt-1 ml-6 text-[11px] text-emerald-800 whitespace-pre-wrap [overflow-wrap:anywhere]">💬 {f.review.notes}</p>
                   )}
                   {openFiles.has(f.key) && (
                     <FileReview
@@ -494,7 +610,7 @@ export function SubmissionRow({
                       classId={classId}
                       btn={btn}
                       onUpdated={onUpdated}
-                      onError={onError}
+                      onDirtyChange={markFileDirty}
                       onClose={() => toggleFileReview(f.key)}
                     />
                   )}
@@ -513,8 +629,8 @@ export function SubmissionRow({
                     Files add up to <b className="text-gray-900">{filesMarks}{filesTotal != null ? ` / ${filesTotal}` : ''}</b>
                     {' '}({markedFiles.length} of {s.files.length} marked)
                   </span>
-                  <button type="button" disabled={saving}
-                    onClick={() => { setMarks(String(filesMarks)); setTotal(filesTotal != null ? String(filesTotal) : '') }}
+                  <button type="button" disabled={busy}
+                    onClick={() => { setMarks(str(filesMarks)); setTotal(str(filesTotal)); setTouched(true); setFormError('') }}
                     title="Copy the files' total into the overall marks"
                     className="text-[10px] font-semibold px-2 py-0.5 rounded border border-teal-200 text-teal-700 hover:bg-teal-50 disabled:opacity-50">
                     Use total
@@ -528,32 +644,44 @@ export function SubmissionRow({
               </p>
             )}
 
-            <div className="flex items-end gap-2 mb-2.5">
-              <div>
-                <label className="text-[10px] text-gray-400 font-semibold">Marks</label>
-                <input type="number" min="0" step="0.5" value={marks} onChange={(e) => setMarks(e.target.value)}
-                  placeholder="—" disabled={saving}
-                  className="mt-0.5 w-20 text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-teal-400" />
+            <div className="mb-2.5">
+              <div className="flex items-end gap-2">
+                <div>
+                  <label className="text-[10px] text-gray-400 font-semibold" htmlFor={`m-${s._id}`}>Marks</label>
+                  <input id={`m-${s._id}`} type="text" inputMode="decimal" autoComplete="off" value={marks}
+                    onChange={(e) => { const v = acceptNum(e.target.value); if (v !== null) { setMarks(v); setFormError(''); setConfirmBare(false) } }}
+                    onBlur={() => setTouched(true)} aria-invalid={!!marksErrs.marks}
+                    placeholder="—" disabled={busy} className={`block ${inputCls(marksErrs.marks)}`} />
+                </div>
+                <span className="text-gray-300 pb-2">/</span>
+                <div>
+                  <label className="text-[10px] text-gray-400 font-semibold" htmlFor={`t-${s._id}`}>Out of</label>
+                  <input id={`t-${s._id}`} type="text" inputMode="decimal" autoComplete="off" value={totalMarks}
+                    onChange={(e) => { const v = acceptNum(e.target.value); if (v !== null) { setTotal(v); setFormError('') } }}
+                    onBlur={() => setTouched(true)} aria-invalid={!!marksErrs.total}
+                    placeholder="—" disabled={busy} className={`block ${inputCls(marksErrs.total)}`} />
+                </div>
               </div>
-              <span className="text-gray-300 pb-2">/</span>
-              <div>
-                <label className="text-[10px] text-gray-400 font-semibold">Out of</label>
-                <input type="number" min="1" step="0.5" value={totalMarks} onChange={(e) => setTotal(e.target.value)}
-                  placeholder="—" disabled={saving}
-                  className="mt-0.5 w-20 text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-teal-400" />
-              </div>
+              {(marksErrs.marks || marksErrs.total) && (
+                <p role="alert" className="text-[11px] text-red-600 mt-1">⚠ {marksErrs.marks || marksErrs.total}</p>
+              )}
             </div>
 
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} maxLength={4000} disabled={saving}
+            <textarea ref={notesRef} value={notes} rows={2} maxLength={MAX_OVERALL_NOTES} disabled={busy}
+              onChange={(e) => { setNotes(e.target.value); setNotesError(''); setConfirmBare(false) }}
+              aria-invalid={!!notesError}
               placeholder={gradedFiles.length ? 'Overall feedback for the student (each file has its own above)…' : 'Feedback for the student…'}
-              className="w-full text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2.5 py-2 focus:outline-none focus:border-teal-400 disabled:bg-gray-50" />
+              className={`w-full text-sm text-gray-900 bg-white border rounded-lg px-2.5 py-2 focus:outline-none disabled:bg-gray-50 ${
+                notesError ? 'border-red-400 focus:border-red-500' : 'border-gray-200 focus:border-teal-400'}`} />
+            {notesError && <p role="alert" className="text-[11px] text-red-600 mt-0.5">⚠ {notesError}</p>}
 
             {/* Corrected files back to the student */}
             <div className="mt-2.5">
               <input ref={fileRef} type="file" multiple accept={REVIEW_ACCEPT} className="hidden"
                 onChange={(e) => { uploadCorrected(e.target.files); e.target.value = '' }} />
               <div className="flex items-center gap-2 flex-wrap">
-                <button onClick={() => fileRef.current?.click()} disabled={uploading || saving}
+                <button onClick={() => fileRef.current?.click()} disabled={busy || s.mentorFiles.length >= MAX_REVIEW_FILES}
+                  title={s.mentorFiles.length >= MAX_REVIEW_FILES ? `At most ${MAX_REVIEW_FILES} files` : 'Send a marked-up copy back to the student'}
                   className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50">
                   {uploading ? 'Uploading…' : '+ Attach corrected file'}
                 </button>
@@ -566,27 +694,58 @@ export function SubmissionRow({
               </div>
             </div>
 
+            {confirmBare && (
+              <div role="alert" className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2 text-[11px] text-amber-900">
+                No marks or feedback yet — the student will only see "Reviewed".
+                <div className="flex gap-2 mt-1.5">
+                  <button type="button" onClick={() => save('reviewed', { skipBareCheck: true })} disabled={busy}
+                    className="px-2.5 py-1 rounded bg-amber-600 text-white font-semibold hover:bg-amber-700 disabled:opacity-50">
+                    Mark reviewed anyway
+                  </button>
+                  <button type="button" onClick={() => { setConfirmBare(false); notesRef.current?.focus() }}
+                    className="px-2.5 py-1 rounded border border-amber-300 font-semibold hover:bg-amber-100">
+                    Add feedback
+                  </button>
+                </div>
+              </div>
+            )}
+            {formError && (
+              <p role="alert" className="mt-3 text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-2.5 py-1.5">⚠ {formError}</p>
+            )}
+
             <div className="flex gap-2 mt-3 flex-wrap">
-              <button onClick={() => save('reviewed')} disabled={saving}
+              <button onClick={() => save('reviewed')} disabled={busy}
+                title="Finish — the student sees the marks and feedback"
                 className={`px-3 py-2 rounded-lg ${btn} text-white text-xs font-semibold disabled:bg-gray-300`}>
                 {saving ? 'Saving…' : '✓ Mark reviewed'}
               </button>
-              <button onClick={() => save(null)} disabled={saving}
-                className="px-3 py-2 rounded-lg border border-gray-200 text-gray-600 text-xs font-semibold hover:bg-gray-50 disabled:opacity-50">
-                Save draft
-              </button>
-              <button onClick={() => save('changes_requested')} disabled={saving}
-                title="Send it back so the student can add or replace files"
+              {s.status === 'submitted' && (
+                <button onClick={() => save(null)} disabled={busy}
+                  title="Save without sending — the student can't see it yet"
+                  className="px-3 py-2 rounded-lg border border-gray-200 text-gray-600 text-xs font-semibold hover:bg-gray-50 disabled:opacity-50">
+                  Save draft
+                </button>
+              )}
+              <button onClick={() => save('changes_requested')} disabled={busy}
+                title="Send it back — the student sees your feedback and can add or replace files"
                 className="px-3 py-2 rounded-lg border border-amber-300 text-amber-700 text-xs font-semibold hover:bg-amber-50 disabled:opacity-50">
                 Ask for changes
               </button>
             </div>
+            <p className="text-[10px] text-gray-400 mt-1.5">
+              {s.status === 'submitted' && 'Save draft keeps your overall marks and feedback hidden from the student. '}
+              "Ask for changes" needs feedback so the student knows what to fix.
+            </p>
 
-            {s.reviewedAt && (
-              <p className="text-[10px] text-gray-400 mt-2">
-                Reviewed {fmtWhen(s.reviewedAt)}{s.reviewedBy?.name ? ` by ${s.reviewedBy.name}` : ''}
-              </p>
-            )}
+            <div className="flex items-center gap-3 flex-wrap mt-1">
+              {s.reviewedAt && (
+                <p className="text-[10px] text-gray-400">
+                  Reviewed {fmtWhen(s.reviewedAt)}{s.reviewedBy?.name ? ` by ${s.reviewedBy.name}` : ''}
+                </p>
+              )}
+              {dirty && !saving && <span className="text-[10px] font-semibold text-amber-700">● Unsaved changes</span>}
+              {notice && <span role="status" className="text-[11px] font-semibold text-emerald-700">✓ {notice}</span>}
+            </div>
           </div>
         </div>
       )}
@@ -599,27 +758,39 @@ export function SubmissionRow({
 // through the file-review endpoint, which hands back the whole submission so
 // the parent row (and the page's list) update in one go. Leaving every field
 // empty and saving clears the file's review.
-function FileReview({ file: f, submission: s, apiFetch, basePath, classId, btn, onUpdated, onError, onClose }) {
+function FileReview({ file: f, submission: s, apiFetch, basePath, classId, btn, onUpdated, onDirtyChange, onClose }) {
   const r = f.review || {}
-  const [marks, setMarks] = useState(r.marks ?? '')
-  const [total, setTotal] = useState(r.totalMarks ?? '')
+  const [marks, setMarks] = useState(str(r.marks))
+  const [total, setTotal] = useState(str(r.totalMarks))
   const [notes, setNotes] = useState(r.notes || '')
   const [saving, setSaving] = useState(false)
+  const [touched, setTouched] = useState(false)
+  const [error, setError] = useState('')
 
   // Same rule as the overall form: adopt server values only when THEY changed,
   // never on a mere re-render, so typed-but-unsaved marks survive a refresh.
   const lastServer = useRef({ marks: r.marks, totalMarks: r.totalMarks, notes: r.notes })
   useEffect(() => {
     const prev = lastServer.current
-    if (prev.marks !== r.marks)           setMarks(r.marks ?? '')
-    if (prev.totalMarks !== r.totalMarks) setTotal(r.totalMarks ?? '')
+    if (prev.marks !== r.marks)           setMarks(str(r.marks))
+    if (prev.totalMarks !== r.totalMarks) setTotal(str(r.totalMarks))
     if (prev.notes !== r.notes)           setNotes(r.notes || '')
     lastServer.current = { marks: r.marks, totalMarks: r.totalMarks, notes: r.notes }
   }, [r.marks, r.totalMarks, r.notes])
 
+  const dirty = !sameNum(marks, r.marks) || !sameNum(total, r.totalMarks) || notes.trim() !== (r.notes || '').trim()
+  useEffect(() => { onDirtyChange?.(f.key, dirty) }, [onDirtyChange, f.key, dirty])
+  useEffect(() => () => onDirtyChange?.(f.key, false), [onDirtyChange, f.key])
+
+  const errs = validateMarks(marks, total, { finishing: true })
+  const shown = touched ? errs : {}
+
   const save = async () => {
+    if (saving) return
+    setTouched(true)
+    if (errs.marks || errs.total) return
     setSaving(true)
-    onError?.('')
+    setError('')
     try {
       const d = await apiFetch(`${basePath}/${classId}/submissions/${s._id}/file-review`, {
         method: 'POST',
@@ -627,13 +798,13 @@ function FileReview({ file: f, submission: s, apiFetch, basePath, classId, btn, 
           key: f.key,
           marks: marks === '' ? null : Number(marks),
           totalMarks: total === '' ? null : Number(total),
-          notes,
+          notes: notes.trim(),
         }),
       })
       onUpdated(d.submission)
       onClose?.()
     } catch (e) {
-      onError?.(e.message || 'Could not save the review')
+      setError(e.message || 'Could not save the review')
     } finally {
       setSaving(false)
     }
@@ -646,24 +817,32 @@ function FileReview({ file: f, submission: s, apiFetch, basePath, classId, btn, 
       <p className="text-[10px] font-bold text-teal-700 uppercase mb-1.5 truncate" title={f.name}>
         Review · {f.name}
       </p>
-      <div className="flex items-end gap-2 mb-2">
-        <div>
-          <label className="text-[10px] text-gray-400 font-semibold">Marks</label>
-          <input type="number" min="0" step="0.5" value={marks} onChange={(e) => setMarks(e.target.value)}
-            placeholder="—" disabled={saving}
-            className="mt-0.5 w-16 text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-teal-400" />
+      <div className="mb-2">
+        <div className="flex items-end gap-2">
+          <div>
+            <label className="text-[10px] text-gray-400 font-semibold" htmlFor={`fm-${s._id}-${f.key}`}>Marks</label>
+            <input id={`fm-${s._id}-${f.key}`} type="text" inputMode="decimal" autoComplete="off" value={marks}
+              onChange={(e) => { const v = acceptNum(e.target.value); if (v !== null) { setMarks(v); setError('') } }}
+              onBlur={() => setTouched(true)} aria-invalid={!!shown.marks}
+              placeholder="—" disabled={saving} className={`block ${inputCls(shown.marks, 'w-16')}`} />
+          </div>
+          <span className="text-gray-300 pb-2">/</span>
+          <div>
+            <label className="text-[10px] text-gray-400 font-semibold" htmlFor={`ft-${s._id}-${f.key}`}>Out of</label>
+            <input id={`ft-${s._id}-${f.key}`} type="text" inputMode="decimal" autoComplete="off" value={total}
+              onChange={(e) => { const v = acceptNum(e.target.value); if (v !== null) { setTotal(v); setError('') } }}
+              onBlur={() => setTouched(true)} aria-invalid={!!shown.total}
+              placeholder="—" disabled={saving} className={`block ${inputCls(shown.total, 'w-16')}`} />
+          </div>
         </div>
-        <span className="text-gray-300 pb-2">/</span>
-        <div>
-          <label className="text-[10px] text-gray-400 font-semibold">Out of</label>
-          <input type="number" min="1" step="0.5" value={total} onChange={(e) => setTotal(e.target.value)}
-            placeholder="—" disabled={saving}
-            className="mt-0.5 w-16 text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-teal-400" />
-        </div>
+        {(shown.marks || shown.total) && (
+          <p role="alert" className="text-[11px] text-red-600 mt-1">⚠ {shown.marks || shown.total}</p>
+        )}
       </div>
-      <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} maxLength={2000} disabled={saving}
+      <textarea value={notes} onChange={(e) => { setNotes(e.target.value); setError('') }} rows={2} maxLength={MAX_FILE_NOTES} disabled={saving}
         placeholder="Feedback on this file…"
         className="w-full text-sm text-gray-900 bg-white border border-gray-200 rounded-lg px-2.5 py-2 focus:outline-none focus:border-teal-400 disabled:bg-gray-50" />
+      {error && <p role="alert" className="text-[11px] text-red-600 mt-0.5">⚠ {error}</p>}
       <div className="flex items-center gap-2 mt-2 flex-wrap">
         <button onClick={save} disabled={saving || (empty && !f.review)}
           className={`px-3 py-1.5 rounded-lg ${btn} text-white text-xs font-semibold disabled:bg-gray-300`}>

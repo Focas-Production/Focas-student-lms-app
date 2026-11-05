@@ -128,6 +128,67 @@ export default function MentorClassSubmissionsPage() {
   const [q, setQ]               = useState('')
   const [activeId, setActiveId] = useState(null)   // selected (laptop) / expanded (phone) student id
   const [refreshing, setRefreshing] = useState(false)
+  const [toast, setToast]       = useState('')
+
+  // Submissions with unsaved typing in their review form (ids). A ref, not
+  // state: rows report on every keystroke and nothing here needs to re-render.
+  const dirtyRef = useRef(new Set())
+  const markDirty = useCallback((subId, dirty) => {
+    if (dirty) dirtyRef.current.add(subId); else dirtyRef.current.delete(subId)
+  }, [])
+  // Switching student unmounts the review form — ask before typed marks are lost.
+  // Laptop: only one review form is mounted (the selected student), so
+  // "anything unsaved" is the form about to close. Phone: collapsed rows stay
+  // mounted and keep their typing, so collapsing/expanding never asks — only
+  // filters, search and leaving the page do.
+  const okToLeave = () => !dirtyRef.current.size
+    || window.confirm('You have marks or feedback that are not saved yet. Leave without saving?')
+  const pick = (userId) => {
+    if (!okToLeave()) return
+    setActiveId(userId)
+  }
+  // A filter tab or a search can drop the open student out of the list, which
+  // unmounts their form — same question first. Widening (clearing the search)
+  // never removes anyone, so it doesn't ask.
+  const changeFilter = (k) => {
+    if (k === filter || !okToLeave()) return
+    setFilter(k)
+  }
+  const changeQ = (v) => {
+    if (v.trim() && !q.trim() && !okToLeave()) return
+    setQ(v)
+  }
+  // Leaving the page through any in-app link (sidebar, breadcrumb) — the router
+  // swaps the page without a beforeunload, so ask on the click itself.
+  useEffect(() => {
+    const onClick = (e) => {
+      if (!dirtyRef.current.size || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return
+      const a = e.target.closest?.('a[href]')
+      if (!a || a.target === '_blank') return
+      if (a.getAttribute('href') === window.location.pathname) return
+      if (!window.confirm('You have marks or feedback that are not saved yet. Leave without saving?')) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    document.addEventListener('click', onClick, true)
+    return () => document.removeEventListener('click', onClick, true)
+  }, [])
+  // Closing the tab / reloading with unsaved typing.
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (!dirtyRef.current.size) return
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+  useEffect(() => {
+    if (!toast) return undefined
+    const t = setTimeout(() => setToast(''), 4000)
+    return () => clearTimeout(t)
+  }, [toast])
 
   // "Heard in class" requests seen waiting, so the poll can ring when one gets
   // its answer — a backup for a missed room push (both share once() keys, so
@@ -248,7 +309,7 @@ export default function MentorClassSubmissionsPage() {
     <div className="flex flex-col gap-2">
       <div className="flex gap-1 p-1 bg-gray-100 rounded-xl overflow-x-auto">
         {tabs.map((t) => (
-          <button key={t.k} onClick={() => setFilter(t.k)}
+          <button key={t.k} onClick={() => changeFilter(t.k)}
             className={`flex-1 whitespace-nowrap text-[11px] font-semibold px-2 py-1.5 rounded-lg transition ${
               filter === t.k ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
             {t.label} <span className={filter === t.k ? 'text-gray-500' : 'text-gray-400'}>{t.n}</span>
@@ -257,7 +318,7 @@ export default function MentorClassSubmissionsPage() {
       </div>
       {sorted.length >= SEARCH_FROM && (
         <input
-          type="search" value={q} onChange={(e) => setQ(e.target.value)}
+          type="search" value={q} onChange={(e) => changeQ(e.target.value)}
           placeholder="Search name or phone…"
           className="w-full text-sm text-gray-900 bg-white border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-teal-400"
         />
@@ -365,7 +426,7 @@ export default function MentorClassSubmissionsPage() {
             {toolbar}
             <div className="bg-white rounded-2xl shadow-sm overflow-y-auto min-h-0 flex-1">
               {rows.length ? rows.map((r) => (
-                <ListItem key={r.userId} row={r} selected={r.userId === selectedId} onClick={() => setActiveId(r.userId)} />
+                <ListItem key={r.userId} row={r} selected={r.userId === selectedId} onClick={() => { if (r.userId !== selectedId) pick(r.userId) }} />
               )) : (
                 <p className="p-6 text-center text-gray-400 text-sm">
                   {q.trim() ? 'No student matches that search.' : 'Nothing in this filter.'}
@@ -395,7 +456,8 @@ export default function MentorClassSubmissionsPage() {
                   classId={classId}
                   btn={BTN}
                   onUpdated={patchRow}
-                  onError={setError}
+                  onDirtyChange={markDirty}
+                  onNotice={setToast}
                   extraChips={<PresenceChip row={selected} isLive={isLive} />}
                 />
               </div>
@@ -423,7 +485,8 @@ export default function MentorClassSubmissionsPage() {
                     classId={classId}
                     btn={BTN}
                     onUpdated={patchRow}
-                    onError={setError}
+                    onDirtyChange={markDirty}
+                    onNotice={setToast}
                     extraChips={<PresenceChip row={r} isLive={isLive} />}
                   />
                   <HeardInClass compact row={r} cls={cls} verbal={data?.verbal} onChanged={load} onError={setError} />
@@ -437,6 +500,12 @@ export default function MentorClassSubmissionsPage() {
             </div>
           )}
         </>
+      )}
+
+      {toast && (
+        <div role="status" className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] px-4 py-2.5 rounded-xl bg-gray-900 text-white text-sm font-semibold shadow-lg">
+          ✓ {toast}
+        </div>
       )}
     </div>
   )

@@ -10,6 +10,7 @@ import HostParticipantsPanel from './HostParticipantsPanel'
 import StudentMediaGuard from './StudentMediaGuard'
 import CameraRuleGuard from './CameraRuleGuard'
 import VerbalCheckGuard from './VerbalCheckGuard'
+import WorkReviewNotice from './WorkReviewNotice'
 import HostCameraAlerts from './HostCameraAlerts'
 import { usePictureInPicture, pickStageVideo } from '../hooks/usePictureInPicture'
 import BackgroundButton from './BackgroundButton'
@@ -504,6 +505,10 @@ function LiveRoomInner({
   }), [canHost])
   const [submitOpen, setSubmitOpen] = useState(false)
   const [submittedCount, setSubmittedCount] = useState(0)
+  // This class's submission status as the student last heard it — a pending
+  // "redo" turns the Submit button orange (see WorkReviewNotice).
+  const [workStatus, setWorkStatus] = useState(null)
+  const redoAsked = workStatus === 'changes_requested'
   // Host's participants drawer (mute / lock / remove students).
   const [participantsOpen, setParticipantsOpen] = useState(false)
 
@@ -728,12 +733,16 @@ function LiveRoomInner({
           type="button"
           className="lk-button"
           onClick={() => setSubmitOpen(true)}
-          title="Submit a voice note, video, PDF or photo of your work to your mentor"
-          aria-label={submittedCount ? `Submitted ${submittedCount} — open submissions` : 'Submit work'}
-          style={submittedCount ? { backgroundColor: '#0d9488', color: '#fff' } : undefined}
+          title={redoAsked
+            ? 'Your mentor asked you to redo your work — open to see their feedback and send it again'
+            : 'Submit a voice note, video, PDF or photo of your work to your mentor'}
+          aria-label={redoAsked ? 'Redo asked — open submissions'
+            : submittedCount ? `Submitted ${submittedCount} — open submissions` : 'Submit work'}
+          style={redoAsked ? { backgroundColor: '#ea580c', color: '#fff' }
+            : submittedCount ? { backgroundColor: '#0d9488', color: '#fff' } : undefined}
         >
-          <span aria-hidden="true">📎</span>
-          <span className="focas-ctl-label">{submittedCount ? `Submitted ${submittedCount}` : 'Submit work'}</span>
+          <span aria-hidden="true">{redoAsked ? '↩' : '📎'}</span>
+          <span className="focas-ctl-label">{redoAsked ? 'Redo asked' : submittedCount ? `Submitted ${submittedCount}` : 'Submit work'}</span>
         </button>
       )}
     </>
@@ -1054,6 +1063,15 @@ function LiveRoomInner({
         )}
         {/* "Heard in class": the mentor says this student explained their
             work out loud — it counts only once the student confirms here. */}
+        {/* "Your mentor asked you to redo your work" / "…reviewed your work". */}
+        {!canHost && submitClass?.id && (
+          <WorkReviewNotice
+            classId={submitClass.id}
+            refreshKey={submittedCount}
+            onStatus={setWorkStatus}
+            onOpenSubmit={() => setSubmitOpen(true)}
+          />
+        )}
         {!canHost && timerClassId && (
           <VerbalCheckGuard classId={timerClassId} onConfirmed={() => setSubmittedCount((n) => n + 1)} />
         )}

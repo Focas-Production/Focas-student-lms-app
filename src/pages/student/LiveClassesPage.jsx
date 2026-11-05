@@ -4,6 +4,8 @@ import { apiFetch } from '../../api'
 import ScheduleCalendar from '../../components/ScheduleCalendar'
 import { useStudentLiveSession } from '../../components/StudentLiveSessionProvider'
 import { wasAsked } from '../../lib/classFeedback'
+import { wasReviewSeen, markReviewSeen, REVIEW_SEEN_EVENT } from '../../lib/workReviewSeen'
+import { playAsk } from '../../utils/chime'
 import { isHallSession, sessionTypeLabel } from '../../utils/sessionTypes'
 
 // Only loaded when work is actually submitted — it carries the recorder.
@@ -52,10 +54,17 @@ function StudentClassActions({ cls, joining, inClassId, onJoin, onSubmit, onAskB
       {/* Hand work in without rejoining — the class stays here for the whole
           submission window after it ends. */}
       {cls.submissionOpen && (
-        <button onClick={() => onSubmit(cls)}
-          className={`${grow} ${size} rounded-xl border border-teal-300 text-teal-700 font-semibold hover:bg-teal-50 whitespace-nowrap`}>
-          📎 Submit{compact ? '' : ' work'}
-        </button>
+        cls.myWork?.status === 'changes_requested' ? (
+          <button onClick={() => onSubmit(cls)} title="Your mentor asked you to redo this — send the corrected work"
+            className={`${grow} ${size} rounded-xl bg-teal-600 text-white font-semibold hover:bg-teal-700 whitespace-nowrap`}>
+            Send again
+          </button>
+        ) : (
+          <button onClick={() => onSubmit(cls)}
+            className={`${grow} ${size} rounded-xl border border-teal-300 text-teal-700 font-semibold hover:bg-teal-50 whitespace-nowrap`}>
+            📎 Submit{compact ? '' : ' work'}
+          </button>
+        )
       )}
       {lockedOut ? (
         <button
@@ -105,6 +114,24 @@ export default function LiveClassesPage() {
 
   const [asking, setAsking] = useState(null)      // class id whose request is in flight
   const [letIn, setLetIn] = useState('')          // "the mentor let you back in" banner
+  // Review notices dismissed this visit ("classId:at"); localStorage keeps them
+  // dismissed across visits (lib/workReviewSeen).
+  const [dismissed, setDismissed] = useState(() => new Set())
+  const [redoOpen, setRedoOpen] = useState(false)
+  // A notice closed somewhere else in this tab (the room's pop-up) counts as
+  // dismissed here too — keys must match reviewKey() below.
+  useEffect(() => {
+    const onSeen = (e) => {
+      const { classId, at } = e.detail || {}
+      if (classId) setDismissed((prev) => new Set(prev).add(outcomeKey(classId, at)))
+    }
+    window.addEventListener(REVIEW_SEEN_EVENT, onSeen)
+    return () => window.removeEventListener(REVIEW_SEEN_EVENT, onSeen)
+  }, [])
+  const [reviewedOpen, setReviewedOpen] = useState(false)
+  // Redo requests already on screen, so a NEW one arriving on a poll can ring.
+  // null until the first load — what's there on arrival doesn't ring.
+  const redoKeysRef = useRef(null)
   // Which classes we last saw the student locked out of, so the moment the
   // mentor opens the door we can say so — they are outside the room, so this
   // poll IS their notification channel.
@@ -123,6 +150,11 @@ export default function LiveClassesPage() {
       const freed = list.find((c) => c.status === 'live' && !c.removed && wasLocked.has(c._id))
       lockedRef.current = new Set(list.filter((c) => c.removed).map((c) => c._id))
       setClasses(list)
+      const redoKeys = list.filter((c) => c.myWork?.status === 'changes_requested').map((c) => `${c._id}:${c.myWork.at}`)
+      // Ring for a NEW request — unless the student is in a class, where the
+      // room's own notice (WorkReviewNotice) has already rung for it.
+      if (redoKeysRef.current && !sessionRef.current && redoKeys.some((k) => !redoKeysRef.current.has(k))) playAsk()
+      redoKeysRef.current = new Set(redoKeys)
       if (freed) {
         // Let back in → straight into the room, no second click. Skipped when
         // they're already sitting in some other class (minimized) — joining
@@ -195,6 +227,61 @@ export default function LiveClassesPage() {
     if (fresh) openFeedback(fresh)
   }, [toRate, session, feedbackOpen, openFeedback])
 
+  // Review outcomes the student should act on / hear about. Only classes they
+  // can still submit to get a "Send again" — after the window there's nothing
+  // to send, and the server refuses redo requests then anyway.
+  const reviewKey = (c) => outcomeKey(c._id, c.myWork?.at)
+  const redoList = (classes || []).filter((c) => c.myWork?.status === 'changes_requested' && c.submissionOpen)
+  // "NEW" = a redo request with a date this device hasn't opened yet (requests
+  // saved before the date existed are never flagged — nothing to key them on).
+  const isNewOutcome = (c) => !!c.myWork?.at && !dismissed.has(reviewKey(c)) && !wasReviewSeen(c._id, c.myWork.at)
+  const newRedo = redoList.filter(isNewOutcome).length
+  const reviewedNew = (classes || []).filter((c) => c.myWork?.status === 'reviewed' && c.myWork.at
+    && !dismissed.has(reviewKey(c)) && !wasReviewSeen(c._id, c.myWork.at))
+  const dismissReview = (c) => {
+    markReviewSeen(c._id, c.myWork?.at)
+    setDismissed((prev) => new Set(prev).add(reviewKey(c)))
+  }
+  const dismissAllReviewed = () => {
+    reviewedNew.forEach((c) => markReviewSeen(c._id, c.myWork?.at))
+    setDismissed((prev) => {
+      const next = new Set(prev)
+      reviewedNew.forEach((c) => next.add(reviewKey(c)))
+      return next
+    })
+  }
+  const scoreOf = (w) => (w?.marks != null ? ` · ${w.marks}${w.totalMarks != null ? ` / ${w.totalMarks}` : ''}` : '')
+  const openSubmit = (c) => {
+    if (c.myWork?.at) dismissReview(c)
+    setSubmitFor({ id: c._id, title: c.title })
+  }
+
+  // Ticks once a minute so "in 25 min" / "68h left" stay true while the page is open.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(t)
+  }, [])
+
+  // One section per state, so live / upcoming / ended are never mixed. A
+  // "scheduled" class whose planned end has passed was never started — it gets
+  // its own quiet section instead of posing as upcoming.
+  const groups = { live: [], upcoming: [], ended: [], notStarted: [] }
+  for (const c of classes || []) {
+    if (c.status === 'live') groups.live.push(c)
+    else if (c.status === 'ended') groups.ended.push(c)
+    else if (c.status === 'scheduled') {
+      const end = new Date(c.scheduledEnd || c.scheduledStart).getTime()
+      if (Number.isFinite(end) && end < now) groups.notStarted.push(c)
+      else groups.upcoming.push(c)
+    }
+  }
+  groups.upcoming.sort((a, b) => new Date(a.scheduledStart) - new Date(b.scheduledStart))
+  // Ended: anything the mentor sent back first (it needs doing), then newest.
+  const redoFirst = (c) => (c.myWork?.status === 'changes_requested' ? 0 : 1)
+  groups.ended.sort((a, b) => (redoFirst(a) - redoFirst(b)) || (new Date(b.endedAt || 0) - new Date(a.endedAt || 0)))
+  groups.notStarted.sort((a, b) => new Date(b.scheduledStart) - new Date(a.scheduledStart))
+
   const join = async (cls) => {
     setError('')
     try {
@@ -235,6 +322,101 @@ export default function LiveClassesPage() {
           <span>{notice}</span>
           <button onClick={clearNotice} className="text-gray-400 hover:text-gray-600 text-lg leading-none" title="Dismiss">×</button>
         </p>
+      )}
+
+      {/* Mentor sent work back — one slim line (the cards below carry the
+          note and a "Send again" button); opens into a short list on click.
+          Stays until the student sends new work. */}
+      {redoList.length > 0 && (
+        <div role="alert" className="mb-5 bg-white border border-gray-100 border-l-4 border-l-amber-400 rounded-xl shadow-sm">
+          <button type="button" onClick={() => setRedoOpen((v) => !v)} aria-expanded={redoOpen}
+            className="w-full flex items-center gap-2 px-3 py-2 text-left">
+            <span className="text-sm font-semibold text-gray-900 min-w-0 truncate">
+              <span className="hidden sm:inline">Your mentor asked you to redo {redoList.length === 1 ? 'your work' : `work for ${redoList.length} classes`}</span>
+              <span className="sm:hidden">Redo asked · {redoList.length} {redoList.length === 1 ? 'class' : 'classes'}</span>
+            </span>
+            {newRedo > 0 && (
+              <span className="flex-shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">{newRedo} new</span>
+            )}
+            <span className="flex-1" />
+            <span className="text-xs font-semibold text-teal-700 whitespace-nowrap">{redoOpen ? 'Hide ▴' : 'Show ▾'}</span>
+          </button>
+          {redoOpen && (
+            <ul className="border-t border-gray-100 divide-y divide-gray-100">
+              {redoList.map((c) => (
+                <li key={c._id} className="flex items-center gap-2 px-3 py-1.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-gray-900 truncate">{c.title}</p>
+                    {c.myWork.note && (
+                      <p className="text-[11px] text-gray-600 truncate" title={c.myWork.note}>
+                        {c.myWork.reviewerName || 'Mentor'}: “{c.myWork.note}”{c.myWork.at ? ` · ${fmtWhen(c.myWork.at)}` : ''}
+                      </p>
+                    )}
+                  </div>
+                  <button onClick={() => openSubmit(c)}
+                    className="px-2.5 py-1 rounded-lg bg-teal-600 text-white text-xs font-semibold hover:bg-teal-700 whitespace-nowrap">
+                    Send again
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Newly finished reviews — shown once per device, then the card's
+          "Reviewed" label carries it. One card for one review; several fold
+          into a single line (a student back after a week may have many). */}
+      {reviewedNew.length === 1 && (() => {
+        const c = reviewedNew[0]
+        return (
+          <div role="status" className="mb-3 bg-white border border-gray-100 border-l-4 border-l-teal-500 rounded-xl shadow-sm px-3 py-2.5 flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-gray-900 [overflow-wrap:anywhere]">
+                ✓ {c.myWork.reviewerName || 'Your mentor'} reviewed your work for “{c.title}”{scoreOf(c.myWork)}
+              </p>
+              {c.myWork.note && <p className="text-xs text-gray-600 mt-0.5 line-clamp-2 whitespace-pre-wrap [overflow-wrap:anywhere]">“{c.myWork.note}”</p>}
+            </div>
+            {c.submissionOpen && (
+              <button onClick={() => openSubmit(c)}
+                className="px-3 py-1.5 rounded-lg bg-teal-600 text-white text-xs font-semibold hover:bg-teal-700 whitespace-nowrap">
+                See feedback
+              </button>
+            )}
+            <button onClick={() => dismissReview(c)} className="text-gray-300 hover:text-gray-600 text-lg leading-none" title="Dismiss" aria-label="Dismiss">×</button>
+          </div>
+        )
+      })()}
+      {reviewedNew.length > 1 && (
+        <div role="status" className="mb-3 bg-white border border-gray-100 border-l-4 border-l-teal-500 rounded-xl shadow-sm">
+          <div className="flex items-center gap-2 px-3 py-2">
+            <button type="button" onClick={() => setReviewedOpen((v) => !v)} aria-expanded={reviewedOpen}
+              className="flex-1 min-w-0 flex items-center gap-2 text-left">
+              <span className="text-sm font-semibold text-gray-900 truncate">✓ {reviewedNew.length} of your submissions were reviewed</span>
+              <span className="flex-1" />
+              <span className="text-xs font-semibold text-teal-700 whitespace-nowrap">{reviewedOpen ? 'Hide ▴' : 'Show ▾'}</span>
+            </button>
+            <button onClick={dismissAllReviewed} className="text-gray-300 hover:text-gray-600 text-lg leading-none"
+              title="Mark all as seen" aria-label="Mark all as seen">×</button>
+          </div>
+          {reviewedOpen && (
+            <ul className="border-t border-gray-100 divide-y divide-gray-100">
+              {reviewedNew.map((c) => (
+                <li key={c._id} className="flex items-center gap-2 px-3 py-1.5">
+                  <p className="min-w-0 flex-1 text-xs text-gray-800 truncate" title={c.title}>
+                    {c.title}<span className="font-semibold">{scoreOf(c.myWork)}</span>
+                  </p>
+                  {c.submissionOpen && (
+                    <button onClick={() => openSubmit(c)}
+                      className="px-2.5 py-1 rounded-lg bg-teal-600 text-white text-xs font-semibold hover:bg-teal-700 whitespace-nowrap">
+                      See feedback
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
 
       {/* Ended classes still waiting for a rating. */}
@@ -285,52 +467,47 @@ export default function LiveClassesPage() {
           <p className="text-gray-400 text-sm">When a tutor schedules a session, it'll show up here.</p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {classes.map((c) => {
-            const live = c.status === 'live'
-            const ended = c.status === 'ended'
-            return (
-              <div key={c._id} className="bg-white rounded-2xl shadow-sm p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                      live ? 'bg-red-100 text-red-700'
-                        : ended ? 'bg-gray-100 text-gray-500'
-                        : 'bg-sky-100 text-sky-700'}`}>
-                      {live ? '● LIVE' : ended ? 'Ended' : 'Upcoming'}
-                    </span>
-                    {c.roomLabel && (
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">
-                        {c.roomLabel} · {c.trackLabel}
-                      </span>
-                    )}
-                    {isHallSession(c) && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">{sessionTypeLabel(c)}</span>}
-                    {c.hostName && <span className="text-[11px] text-gray-400">with {c.hostName}</span>}
-                  </div>
-                  {/* One bold line: when it runs, then which slot it is */}
-                  <p className="text-sm font-bold text-gray-900">
-                    {fmtWhen(c.scheduledStart)} · {c.title}
-                  </p>
-                  {c.chapterName && (
-                    <p className="text-xs text-indigo-500 break-words mt-0.5">
-                      📖 {c.subjectName ? `${c.subjectName} · ` : ''}{c.chapterName}
-                    </p>
-                  )}
-                  {c.chapterName && c.unitName && (
-                    <p className="text-xs text-indigo-500 break-words mt-0.5">↳ {c.unitName}</p>
-                  )}
-                  {c.description && <p className="text-xs text-gray-500 line-clamp-1 mt-0.5">{c.description}</p>}
-                </div>
-
-                <div className="flex gap-2 flex-shrink-0 w-full sm:w-auto">
-                  <StudentClassActions cls={c} joining={joining} inClassId={session?.classId} placeholder
+        <div className="space-y-6">
+          {(() => {
+            const card = (c, kind) => (
+              <ClassCard key={c._id} c={c} kind={kind} now={now}
+                actions={(
+                  <StudentClassActions cls={c} joining={joining} inClassId={session?.classId}
+                    placeholder={kind === 'upcoming'}
                     asking={asking} onAskBack={askBack}
                     onJoin={join}
-                    onSubmit={(cls) => setSubmitFor({ id: cls._id, title: cls.title })} />
-                </div>
-              </div>
+                    onSubmit={openSubmit} />
+                )} />
             )
-          })}
+            return (
+              <>
+                {groups.live.length > 0 && (
+                  <Section tone="live" title="Live now" count={groups.live.length}
+                    hint="Happening right now — press Join now to attend.">
+                    {groups.live.map((c) => card(c, 'live'))}
+                  </Section>
+                )}
+                <Section tone="upcoming" title="Upcoming" count={groups.upcoming.length}
+                  hint={groups.upcoming.length ? 'Your next sessions, soonest first. Join opens when the mentor starts the class.' : null}>
+                  {groups.upcoming.length
+                    ? <FoldList items={groups.upcoming} first={8} noun="upcoming sessions" render={(c) => card(c, 'upcoming')} />
+                    : <p className="text-sm text-gray-400 bg-white rounded-2xl px-4 py-3">No upcoming sessions yet. New ones show up here when your mentor schedules them.</p>}
+                </Section>
+                {groups.ended.length > 0 && (
+                  <Section tone="ended" title="Ended recently" count={groups.ended.length}
+                    hint="These are over. You can still hand in work until the time shown on each.">
+                    <FoldList items={groups.ended} first={5} noun="ended sessions" render={(c) => card(c, 'ended')} />
+                  </Section>
+                )}
+                {groups.notStarted.length > 0 && (
+                  <Section tone="missed" title="Didn't start" count={groups.notStarted.length}
+                    hint="The planned time has passed and the mentor hasn't started these. If they start one, it moves to Live now.">
+                    <FoldList items={groups.notStarted} first={3} noun="sessions" render={(c) => card(c, 'missed')} />
+                  </Section>
+                )}
+              </>
+            )
+          })()}
         </div>
       )}
 
@@ -348,6 +525,173 @@ export default function LiveClassesPage() {
   )
 }
 
+
+// One review outcome = class + its timestamp (as a number, so an ISO string and
+// a Date for the same instant match).
+const outcomeKey = (classId, at) => `${classId}:${at ? new Date(at).getTime() : 0}`
+
+// ── Tutor Session list pieces ──
+
+// Colour budget for this page — one meaning each, nothing decorative:
+//   red   = live right now          amber = needs the student's action
+//   teal  = buttons (brand)         gray  = everything else
+const SECTION_TONE = {
+  live:     { dot: 'bg-red-500 animate-pulse' },
+  upcoming: { dot: 'bg-gray-400' },
+  ended:    { dot: 'bg-gray-300' },
+  missed:   { dot: 'bg-gray-200' },
+}
+
+function Section({ tone, title, count, hint, children }) {
+  const t = SECTION_TONE[tone]
+  return (
+    <section aria-label={title}>
+      <div className="flex items-center gap-2 mb-1">
+        <span className={`w-2.5 h-2.5 rounded-full ${t.dot}`} aria-hidden="true" />
+        <h2 className="text-sm font-bold text-gray-800">{title}</h2>
+        <span className="text-xs font-semibold text-gray-400">{count}</span>
+      </div>
+      {hint && <p className="text-xs text-gray-400 mb-2">{hint}</p>}
+      <div className="space-y-3">{children}</div>
+    </section>
+  )
+}
+
+// Long groups (30 ended classes in a busy week) show the first few and fold
+// the rest behind one button, so the next section is never pages away.
+function FoldList({ items, first, noun, render }) {
+  const [all, setAll] = useState(false)
+  const shown = all ? items : items.slice(0, first)
+  const hidden = items.length - shown.length
+  return (
+    <>
+      {shown.map(render)}
+      {items.length > first && (
+        <button type="button" onClick={() => setAll((v) => !v)} aria-expanded={all}
+          className="w-full text-center text-xs font-semibold text-teal-700 bg-white border border-gray-100 rounded-xl py-2.5 hover:bg-gray-50">
+          {all ? 'Show less ▴' : `Show all ${items.length} ${noun} (${hidden} more) ▾`}
+        </button>
+      )}
+    </>
+  )
+}
+
+const timeOf = (d) => new Date(d).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+function dayOf(d, now) {
+  const x = new Date(d), today = new Date(now)
+  const startOf = (v) => new Date(v.getFullYear(), v.getMonth(), v.getDate()).getTime()
+  const diff = Math.round((startOf(x) - startOf(today)) / 86400000)
+  if (diff === 0) return 'Today'
+  if (diff === 1) return 'Tomorrow'
+  if (diff === -1) return 'Yesterday'
+  return x.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+}
+// "45 min" / "2h 10m" / "3 days"
+function span(ms) {
+  const m = Math.max(0, Math.round(ms / 60000))
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60)
+  if (h < 48) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`
+  return `${Math.round(h / 24)} days`
+}
+
+// The time line under a card's title — says in words where the class stands.
+function TimeLine({ c, kind, now }) {
+  const start = c.scheduledStart ? new Date(c.scheduledStart).getTime() : null
+  const plannedEnd = c.scheduledEnd ? new Date(c.scheduledEnd).getTime() : null
+  if (kind === 'live') {
+    const since = c.startedAt ? new Date(c.startedAt).getTime() : start
+    return (
+      <p className="text-xs text-gray-600">
+        Started {timeOf(since)}{plannedEnd ? ` · planned till ${timeOf(plannedEnd)}` : ''}
+        <span className="text-gray-400"> · running {span(now - since)}</span>
+      </p>
+    )
+  }
+  if (kind === 'upcoming') {
+    const soon = start - now
+    return (
+      <p className="text-xs text-gray-600">
+        <span className="font-semibold text-gray-800">{dayOf(start, now)}, {timeOf(start)}{plannedEnd ? ` – ${timeOf(plannedEnd)}` : ''}</span>
+        {soon > 0
+          ? <span className="text-gray-400"> · starts in {span(soon)}</span>
+          : <span className="text-gray-500"> · waiting for the mentor to start</span>}
+      </p>
+    )
+  }
+  if (kind === 'ended') {
+    const closes = c.submissionClosesAt ? new Date(c.submissionClosesAt).getTime() : null
+    const left = closes ? closes - now : null
+    return (
+      <div className="text-xs text-gray-500">
+        <p className="text-gray-400">Held {dayOf(c.startedAt || start, now)}, {timeOf(c.startedAt || start)}{c.endedAt ? ` – ${timeOf(c.endedAt)}` : ''}</p>
+        {closes && left > 0 && (
+          <p className={left <= 6 * 3600000 ? 'text-amber-700 font-semibold' : 'text-gray-500'}>
+            Submit work by {dayOf(closes, now)}, {timeOf(closes)} · {span(left)} left
+          </p>
+        )}
+      </div>
+    )
+  }
+  return <p className="text-xs text-gray-400">Was planned for {dayOf(start, now)}, {timeOf(start)}</p>
+}
+
+const CARD_EDGE = {
+  live: 'border border-red-200',
+  upcoming: 'border border-gray-100',
+  ended: 'border border-gray-100',
+  missed: 'border border-gray-100 opacity-70',
+}
+
+function ClassCard({ c, kind, now, actions }) {
+  return (
+    <div className={`bg-white rounded-2xl shadow-sm p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 ${CARD_EDGE[kind]}`}>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
+          {kind === 'live' && <span className="text-[10px] font-bold text-red-600">● LIVE</span>}
+          <span className="text-[11px] text-gray-400">
+            {[c.roomLabel && `${c.roomLabel} · ${c.trackLabel}`, isHallSession(c) && sessionTypeLabel(c), c.hostName && `with ${c.hostName}`]
+              .filter(Boolean).join(' · ')}
+          </span>
+          <WorkChip work={c.myWork} />
+        </div>
+        <p className={`text-sm font-semibold [overflow-wrap:anywhere] ${kind === 'missed' ? 'text-gray-500' : 'text-gray-900'}`}>{c.title}</p>
+        <TimeLine c={c} kind={kind} now={now} />
+        {c.chapterName && c.chapterName !== c.title && !c.title?.includes(c.chapterName) && (
+          <p className="text-xs text-gray-500 break-words mt-0.5">
+            {c.subjectName ? `${c.subjectName} · ` : ''}{c.chapterName}
+          </p>
+        )}
+        {c.chapterName && c.unitName && (
+          <p className="text-xs text-gray-500 break-words mt-0.5">↳ {c.unitName}</p>
+        )}
+        {c.description && <p className="text-xs text-gray-500 line-clamp-1 mt-0.5">{c.description}</p>}
+        {c.myWork?.status === 'changes_requested' && c.myWork.note && (
+          <p className="text-xs text-gray-700 border-l-2 border-amber-400 pl-2 mt-1.5 line-clamp-2 [overflow-wrap:anywhere]" title={c.myWork.note}>
+            <span className="font-semibold">{c.myWork.reviewerName || 'Mentor'}:</span> “{c.myWork.note}”
+          </p>
+        )}
+      </div>
+      {actions && <div className="flex gap-2 flex-shrink-0 w-full sm:w-auto empty:hidden">{actions}</div>}
+    </div>
+  )
+}
+
+// Where the student's hand-in for a class stands, on its card.
+function WorkChip({ work }) {
+  if (!work) return null
+  if (work.status === 'changes_requested') {
+    return <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Redo asked</span>
+  }
+  if (work.status === 'reviewed') {
+    return (
+      <span className="text-[11px] text-gray-500">
+        · ✓ Reviewed{work.marks != null ? ` · ${work.marks}${work.totalMarks != null ? `/${work.totalMarks}` : ''}` : ''}
+      </span>
+    )
+  }
+  return <span className="text-[11px] text-gray-500">· Submitted, waiting for review</span>
+}
 
 // A short rising pair — "the door opened". Synthesized like the room's own
 // chimes so there is no audio asset to load, and only ever fired straight after
