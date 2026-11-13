@@ -1,3 +1,4 @@
+import { askClashConfirm } from '../components/clashConfirm.js'
 import { getDeviceId } from '../lib/deviceId'
 
 const BASE = import.meta.env.VITE_API_BASE
@@ -40,12 +41,14 @@ export async function apiFetch(path, options = {}) {
 // listed student) is already booked elsewhere at that time. That is a warning,
 // not a refusal — show it and, if the scheduler still wants it, re-send with
 // allowClash. `send(extra)` must merge `extra` into its JSON body.
-export async function saveWithClashCheck(send) {
+// `context` (optional) names the booking on the card, e.g. "Fri · Room 3 Track 5".
+export async function saveWithClashCheck(send, context = '') {
   try {
     return await send({})
   } catch (err) {
     if (err.data?.code !== 'PERSON_CLASH') throw err
-    if (!window.confirm(`${err.message}\n\nSave anyway?`)) {
+    const ok = await askClashConfirm({ clashes: err.data.clashes, message: err.message, context })
+    if (!ok) {
       const e = new Error('Not saved — change the time or the people, or save anyway.')
       e.cancelled = true
       throw e

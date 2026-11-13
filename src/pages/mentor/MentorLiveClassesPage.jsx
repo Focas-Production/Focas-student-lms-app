@@ -697,7 +697,7 @@ function ScheduleClassModal({ syllabus, onClose, onCreated, onBooked }) {
               <select className={field} value={form.hostUserId}
                 onChange={(e) => setForm((f) => ({ ...f, hostUserId: e.target.value }))}>
                 <option value="">Me</option>
-                {hosts.map((h) => <option key={h.id} value={h.id}>{h.name}{h.role === 'admin' ? ' (admin)' : ''}</option>)}
+                {hosts.filter((h) => h.role === 'mentor').map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
               </select>
             </div>
             <div>
