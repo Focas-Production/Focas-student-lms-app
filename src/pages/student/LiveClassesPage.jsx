@@ -7,6 +7,7 @@ import { wasAsked } from '../../lib/classFeedback'
 import { wasReviewSeen, markReviewSeen, REVIEW_SEEN_EVENT } from '../../lib/workReviewSeen'
 import { playAsk } from '../../utils/chime'
 import { isHallSession, sessionTypeLabel } from '../../utils/sessionTypes'
+import { plannedNames } from '../../utils/plannedItems'
 
 // Only loaded when work is actually submitted — it carries the recorder.
 const SubmitWorkPanel = lazy(() => import('../../components/SubmitWorkPanel'))
@@ -664,6 +665,9 @@ function ClassCard({ c, kind, now, actions }) {
         )}
         {c.chapterName && c.unitName && (
           <p className="text-xs text-gray-500 break-words mt-0.5">↳ {c.unitName}</p>
+        )}
+        {plannedNames(c).length > 0 && (
+          <p className="text-xs text-gray-500 break-words mt-0.5">＋ Also: {plannedNames(c).join(', ')}</p>
         )}
         {c.description && <p className="text-xs text-gray-500 line-clamp-1 mt-0.5">{c.description}</p>}
         {c.myWork?.status === 'changes_requested' && c.myWork.note && (

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { apiFetch } from '../api'
 import { groupRoomSlots } from '../utils/roomSlots'
 import { isHallSession, sessionTypeLabel } from '../utils/sessionTypes'
+import { plannedNames } from '../utils/plannedItems'
 
 // Month / week / day calendar of live-class slots, shared by the student and the
 // mentor portals. Only the feed and the buttons differ, so both are props:
@@ -229,6 +230,9 @@ function ClassDetailModal({ cls, now, actions, onClose }) {
             </p>
           )}
           {cls.chapterName && cls.unitName && <p className="text-sm text-indigo-600">↳ {cls.unitName}</p>}
+          {plannedNames(cls).length > 0 && (
+            <p className="text-sm text-indigo-600">＋ Also: {plannedNames(cls, { withDone: true }).join(', ')}</p>
+          )}
           {cls.description && <p className="text-sm text-gray-500 whitespace-pre-line">{cls.description}</p>}
           {/* A room slot: the tracks running in it, each with its own status */}
           {cls.isGroup && (
@@ -242,6 +246,7 @@ function ClassDetailModal({ cls, now, actions, onClose }) {
                       <p className="text-xs text-gray-500 truncate">
                         {[`${fmtTime(t.scheduledStart)} – ${fmtTime(t.scheduledEnd)}`, t.subjectName, t.chapterName, t.unitName]
                           .filter(Boolean).join(' · ')}
+                        {plannedNames(t).length > 0 && ` ＋ ${plannedNames(t).join(', ')}`}
                       </p>
                     </div>
                     <StatusBadge status={t.status} />

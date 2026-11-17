@@ -56,6 +56,15 @@ function progressFor(syllabus, c) {
 const sessionDone = (cls, syllabusDoc) =>
   (cls.outcome ? cls.outcome.completed === true : !!syllabusDoc?.completed)
 
+// Extra chapters/units the admin planned for this class (beyond the booked
+// one). A plan, not a result: each counts as finished only once ticked here,
+// which files it under extraItems.
+const sameItem = (x, chId, uId) =>
+  String(x.chapter?.chapterId || '') === String(chId || '') && String(x.unit?.unitId || '') === String(uId || '')
+const isPlanned = (cls, chId, uId) => (cls.plannedItems || []).some((x) => sameItem(x, chId, uId))
+const plannedDone = (cls, x) => (cls.extraItems || []).some((e) => sameItem(e, x.chapter?.chapterId, x.unit?.unitId))
+const itemText = (x) => (x.unit?.name ? `${x.chapter?.name} · ${x.unit.name}` : x.chapter?.name || '')
+
 // How long after a class ends the catch-up prompt is still worth showing.
 const ENDED_CATCHUP_MS = 2 * 24 * 60 * 60 * 1000
 
@@ -81,7 +90,7 @@ function CoveredChecklist({ cls, subject, busyKey, onToggle, hidePrimary = false
     String(x.chapter?.chapterId) === String(chId) && String(x.unit?.unitId || '') === String(uId || ''))
 
   const row = (ch, u) => {
-    if (hidePrimary && isPrimary(ch._id, u?._id)) return null
+    if (hidePrimary && (isPrimary(ch._id, u?._id) || isPlanned(cls, ch._id, u?._id))) return null
     const chId = ch._id, uId = u?._id
     const doc = u || ch
     const primary = isPrimary(chId, uId)
@@ -96,6 +105,10 @@ function CoveredChecklist({ cls, subject, busyKey, onToggle, hidePrimary = false
         <span className={`text-sm min-w-0 truncate ${u ? 'text-gray-600' : 'font-semibold text-gray-800'}`}>{doc.name}</span>
         {primary && (
           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-500 uppercase flex-shrink-0">scheduled</span>
+        )}
+        {!primary && isPlanned(cls, chId, uId) && (
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-500 uppercase flex-shrink-0"
+            title="The admin planned this for the class too">planned</span>
         )}
         {!coveredHere && doc.completed && (
           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-teal-50 text-teal-600 flex-shrink-0"
@@ -170,7 +183,9 @@ function ClassEndedModal({ cls, subject, busyKey, error, late, onSetDone, onTogg
   const primaryKey = `${cls.chapter?.chapterId || ''}:${cls.unit?.unitId || ''}`
   const saving = busyKey === primaryKey
   const busy = !!busyKey
-  const extrasCount = (cls.extraItems || []).length
+  const planned = (cls.plannedItems || []).filter((x) => x.chapter?.chapterId)
+  // "Also finished" counts only the unplanned extras — planned ones sit above.
+  const extrasCount = (cls.extraItems || []).filter((x) => !isPlanned(cls, x.chapter?.chapterId, x.unit?.unitId)).length
   const ran = runDuration(cls)
 
   return (
@@ -210,7 +225,7 @@ function ClassEndedModal({ cls, subject, busyKey, error, late, onSetDone, onTogg
           {hasItem ? (
             <>
               <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                Did you finish the scheduled {kind}?
+                {planned.length ? 'Did you finish everything scheduled?' : `Did you finish the scheduled ${kind}?`}
               </p>
               <p className={`text-xs font-semibold mt-1 mb-2 ${done ? 'text-teal-700' : 'text-amber-700'}`}>
                 {done
@@ -235,6 +250,40 @@ function ClassEndedModal({ cls, subject, busyKey, error, late, onSetDone, onTogg
                   {saving ? 'Saving…' : done ? 'Completed' : 'Tick to mark'}
                 </span>
               </button>
+              {/* Planned extras: one row each, ticked only if finished. An
+                  unticked one stays "not done" for every student. */}
+              {planned.length > 0 && (
+                <div className="mt-2 space-y-1.5">
+                  {planned.map((x) => {
+                    const chId = x.chapter.chapterId, uId = x.unit?.unitId || null
+                    const key = `${chId}:${uId || ''}`
+                    const on = plannedDone(cls, x)
+                    return (
+                      <button key={key} type="button" role="checkbox" aria-checked={on} disabled={busy}
+                        onClick={() => onToggle(chId, uId, false, !on)}
+                        className={`w-full text-left rounded-xl border-2 p-3 flex items-center gap-3 transition disabled:opacity-60 ${
+                          on ? 'border-teal-500 bg-teal-50' : 'border-gray-200 bg-white hover:border-teal-400'}`}>
+                        <span className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition ${
+                          on ? 'bg-teal-600 border-teal-600 text-white' : 'border-gray-400 bg-white'}`}>
+                          {on && <CheckIcon className="w-3.5 h-3.5" />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold text-gray-900 truncate">{x.unit?.name || x.chapter?.name}</span>
+                          <span className="block text-xs text-gray-500 truncate">
+                            {[cls.subject?.name, x.unit?.name ? x.chapter?.name : null].filter(Boolean).join(' · ')} · also planned
+                          </span>
+                        </span>
+                        <span className={`text-[11px] font-semibold flex-shrink-0 ${on ? 'text-teal-700' : 'text-gray-500'}`}>
+                          {busyKey === key ? 'Saving…' : on ? 'Completed' : 'Tick if finished'}
+                        </span>
+                      </button>
+                    )
+                  })}
+                  <p className="text-[11px] text-gray-500 leading-relaxed">
+                    Didn't get to a planned one? Leave it unticked — it stays pending so it can be scheduled again.
+                  </p>
+                </div>
+              )}
               {done && (
                 <p className="mt-2 text-[11px] text-teal-700 leading-relaxed">
                   Students who attended enough of this class get it completed automatically.
@@ -311,9 +360,15 @@ function ClassMeta({ c }) {
       {c.chapter?.name && c.unit?.name && (
         <p className="text-xs text-indigo-500 break-words mt-0.5">↳ {c.unit.name}</p>
       )}
+      {(c.plannedItems || []).some((x) => !plannedDone(c, x)) && (
+        <p className="text-xs text-indigo-500 break-words mt-0.5"
+          title={c.plannedItems.filter((x) => !plannedDone(c, x)).map(itemText).join(', ')}>
+          ＋ also planned: {c.plannedItems.filter((x) => !plannedDone(c, x)).map((x) => x.unit?.name || x.chapter?.name).filter(Boolean).join(', ')}
+        </p>
+      )}
       {c.extraItems?.length > 0 && (
         <p className="text-xs text-teal-600 break-words mt-0.5"
-          title={c.extraItems.map((x) => x.unit?.name ? `${x.chapter?.name} · ${x.unit.name}` : x.chapter?.name).join(', ')}>
+          title={c.extraItems.map(itemText).join(', ')}>
           ✓ also finished: {c.extraItems.map((x) => x.unit?.name || x.chapter?.name).filter(Boolean).join(', ')}
         </p>
       )}
