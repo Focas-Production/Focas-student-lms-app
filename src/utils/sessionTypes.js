@@ -1,10 +1,10 @@
-// FOCAS Hall session types — announcements, inductions, introductions. Every
+// FOCAS Hall session types — announcements, inductions, faculty sessions. Every
 // classroom session is "class". Keys mirror server/config/liveRooms.js
 // (HALL_SESSION_TYPES); the topology endpoint also returns them for forms.
 export const SESSION_TYPE_LABELS = {
   announcement: 'Announcement',
   induction:    'Induction',
-  introduction: 'Introduction',
+  faculty:      'Faculty',
   mentorship:   'Mentorship',
   other:        'Hall session',
 }
