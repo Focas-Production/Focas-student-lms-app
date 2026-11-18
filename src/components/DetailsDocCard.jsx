@@ -3,9 +3,11 @@
 // Uploaded → thumbnail (photos) or PDF tile, status badge, Replace / View.
 // Asked to re-upload → red card with the office's reason.
 // Approved → locked; only the office can change it.
+// A photo opens Rotate / crop (ImageEditModal) before it uploads; PDFs go straight up.
 import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../api'
 import { uploadDocument, fmtSize } from '../lib/studentDetails'
+import ImageEditModal from './ImageEditModal'
 
 const BASE = '/api/student-details/me'
 
@@ -40,6 +42,8 @@ export default function DetailsDocCard({ type, label, doc, options, onUploaded, 
   const [error, setError] = useState('')
   const [thumb, setThumb] = useState(null)         // image URL for the preview
   const [thumbFailed, setThumbFailed] = useState(false)   // stop re-asking after a broken preview
+  const [editing, setEditing] = useState(null)     // photo waiting in Rotate / crop
+  const [retryFile, setRetryFile] = useState(null) // last file whose upload failed → "Try again"
 
   const isImage = doc && doc.contentType?.startsWith('image/')
   const locked = doc?.status === 'approved'
@@ -53,11 +57,24 @@ export default function DetailsDocCard({ type, label, doc, options, onUploaded, 
     return () => { live = false }
   }, [isImage, type, thumb, thumbFailed])
 
-  async function pick(e) {
+  function pick(e) {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
-    setError(''); setProgress(0); onBusy?.(true)
+    setError(''); setRetryFile(null)
+    if (/^image\/(jpeg|png|webp)$/.test(file.type)) setEditing(file)
+    else send(file)              // PDF (or a type the upload will refuse with a clear message)
+  }
+
+  // blob = the rotated / cropped JPEG, or null when the student changed nothing
+  function edited(blob) {
+    const file = editing
+    setEditing(null)
+    send(blob ? new File([blob], `${file.name.replace(/\.[^.]+$/, '') || 'photo'}.jpg`, { type: 'image/jpeg' }) : file)
+  }
+
+  async function send(file) {
+    setError(''); setRetryFile(null); setProgress(0); onBusy?.(true)
     try {
       const r = await uploadDocument(BASE, type, file, options, setProgress)
       setThumbFailed(false)
@@ -68,6 +85,10 @@ export default function DetailsDocCard({ type, label, doc, options, onUploaded, 
       onUploaded(r.details)
     } catch (err) {
       setError(err.message)
+      // Retrying only helps when the connection / storage failed — not when
+      // the file itself was refused (wrong type, too big, already approved).
+      const refused = (err.status >= 400 && err.status < 500) || /Choose a photo|larger than|empty/.test(err.message)
+      if (!refused) setRetryFile(file)
     } finally {
       setProgress(null); onBusy?.(false)
     }
@@ -145,6 +166,14 @@ export default function DetailsDocCard({ type, label, doc, options, onUploaded, 
 
       {error && (
         <p className="mt-2 text-sm text-rose-600" role="alert">{error}</p>
+      )}
+      {retryFile && progress === null && !locked && (
+        <button type="button" onClick={() => send(retryFile)} className="mt-2 h-10 px-4 rounded-xl border border-rose-200 text-sm font-semibold text-rose-600">Try again</button>
+      )}
+
+      {editing && (
+        <ImageEditModal file={editing} title={`${label} — turn / crop`} saveLabel="Upload"
+          onCancel={() => setEditing(null)} onSave={edited} />
       )}
 
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={pick} />
